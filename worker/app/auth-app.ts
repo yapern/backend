@@ -1,5 +1,6 @@
 import { authJson, hashToken, publicUser, randomToken, readJSON, type AuthUser, type StringHeaders } from "./auth-core";
 import { deletionProvider, revokeDeletionProvider } from "./provider-revocation";
+import { RefreshTokenSchema } from "./auth-schemas";
 
 const ACCESS_MAX_AGE_SECONDS = 15 * 60;
 const REFRESH_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
@@ -173,11 +174,11 @@ async function deleteLegacyAccount(baseURL: string, key: string, sourceUserID: s
 
 export async function handleAppRefresh(request: Request, env: Env, headers: StringHeaders): Promise<Response> {
   if (!env.DB) return authJson({ error: "auth_unavailable" }, 503, headers);
-  const body = await readJSON(request, 2_000);
-  const token = body?.refresh_token;
-  if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+  const parsed = RefreshTokenSchema.safeParse(await readJSON(request, 2_000));
+  if (!parsed.success) {
     return authJson({ error: "invalid_request" }, 400, headers);
   }
+  const token = parsed.data.refresh_token;
   const tokenHash = await hashToken(token);
   const now = new Date().toISOString();
   const claimed = await env.DB.prepare(
@@ -196,11 +197,11 @@ export async function handleAppRefresh(request: Request, env: Env, headers: Stri
 
 export async function handleAppLogout(request: Request, env: Env, headers: StringHeaders): Promise<Response> {
   if (!env.DB) return authJson({ error: "auth_unavailable" }, 503, headers);
-  const body = await readJSON(request, 2_000);
-  const token = body?.refresh_token;
-  if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+  const parsed = RefreshTokenSchema.safeParse(await readJSON(request, 2_000));
+  if (!parsed.success) {
     return authJson({ error: "invalid_request" }, 400, headers);
   }
+  const token = parsed.data.refresh_token;
   const tokenHash = await hashToken(token);
   const row = await env.DB.prepare("SELECT user_id FROM app_refresh_tokens WHERE token_hash = ? LIMIT 1")
     .bind(tokenHash).first<{ user_id: string }>();

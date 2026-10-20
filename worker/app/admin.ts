@@ -1,3 +1,5 @@
+import { OpenAPIHono, z } from "@hono/zod-openapi";
+import { errorResult, jsonResult, registerRoute, type ApiEnv } from "../shared/openapi";
 import { authCorsHeaders, authJson, currentUser } from "./auth-core";
 
 const ADMIN_EMAIL = "oneone@gmail.com";
@@ -28,6 +30,57 @@ const TABLES: TableDefinition[] = [
   { id: "tracked-programs", label: "Tracked programs", group: "Activity", table: "iop_program_tracks", columns: ["id", "user_id", "program_id", "status", "horn_rating", "created_at", "updated_at"], search: ["id", "user_id", "program_id"], order: "updated_at DESC, id DESC" },
 ];
 
+const TableIdSchema = z.enum(TABLES.map((table) => table.id));
+const TableSchema = z.object({
+  id: TableIdSchema, label: z.string(), group: z.string(), columns: z.array(z.string()),
+}).openapi("AdminTable");
+const OffsetSchema = z.string().regex(/^\d+$/).refine((value) => Number(value) <= 1_000_000)
+  .openapi({ description: "Nonnegative decimal offset, at most 1000000. Defaults to 0; empty values also use 0.", example: "0" });
+const QuerySchema = z.string().trim().max(100);
+
+export const adminApp = new OpenAPIHono<ApiEnv>();
+const adminErrors = {
+  401: errorResult("A valid browser session cookie is required (unauthorized)."),
+  403: errorResult("The session is not an administrator (forbidden), or the Origin is not allowed (origin_not_allowed)."),
+  405: { ...errorResult("Only GET is supported (method_not_allowed)."), headers: {
+    Allow: { schema: { type: "string" as const, enum: ["GET"] } },
+  } },
+  503: errorResult("The database or admin read is unavailable (database_unavailable, admin_unavailable)."),
+};
+
+registerRoute(adminApp, {
+  method: "get", path: "/admin/tables", operationId: "listAdminTables",
+  tags: ["Administration"], summary: "List the allowlisted admin tables and visible columns",
+  description: "Requires a browser session for the configured administrator account. Read-only metadata; private chat text is excluded.",
+  security: [{ CookieSession: [] }],
+  responses: {
+    200: jsonResult(z.object({ tables: z.array(TableSchema) }), "Available table definitions."),
+    ...adminErrors,
+  },
+}, (c) => handleAdminRequest(c.req.raw, c.env));
+
+registerRoute(adminApp, {
+  method: "get", path: "/admin/tables/{table}", operationId: "getAdminTableRows",
+  tags: ["Administration"], summary: "Read a page of searchable admin table rows",
+  description: "Requires an administrator browser session. Returns 25 rows per page. Search matches allowlisted columns as a literal substring. Row keys are the table's visible columns; private chat text is excluded.",
+  security: [{ CookieSession: [] }],
+  request: {
+    params: z.object({ table: TableIdSchema }),
+    query: z.object({ offset: OffsetSchema.optional(), q: QuerySchema.optional().describe("Search term; trimmed before applying the 100-character limit.") }),
+  },
+  responses: {
+    200: jsonResult(z.object({
+      items: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))),
+      total: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), limit: z.literal(PAGE_SIZE),
+    }).openapi("AdminRows"), "Matching rows, total count, and pagination."),
+    400: errorResult("Invalid offset (invalid_offset) or search term (invalid_query)."),
+    404: errorResult("Table is not allowlisted (not_found)."), ...adminErrors,
+  },
+}, (c) => handleAdminRequest(c.req.raw, c.env));
+
+// Preserve preflight, unknown-table authorization, and method responses.
+adminApp.all("/admin/*", (c) => handleAdminRequest(c.req.raw, c.env));
+
 export async function handleAdminRequest(request: Request, env: Env): Promise<Response> {
   const corsHeaders = authCorsHeaders(request);
   if (corsHeaders === null) return authJson({ error: "origin_not_allowed" }, 403, {});
@@ -52,11 +105,11 @@ export async function handleAdminRequest(request: Request, env: Env): Promise<Re
 
     const offsetText = url.searchParams.get("offset") || "0";
     const offset = Number(offsetText);
-    if (!/^\d+$/.test(offsetText) || !Number.isSafeInteger(offset) || offset > 1_000_000) {
+    if (!OffsetSchema.safeParse(offsetText).success) {
       return authJson({ error: "invalid_offset" }, 400, corsHeaders);
     }
     const query = (url.searchParams.get("q") || "").trim();
-    if (query.length > 100) return authJson({ error: "invalid_query" }, 400, corsHeaders);
+    if (!QuerySchema.safeParse(query).success) return authJson({ error: "invalid_query" }, 400, corsHeaders);
     const filter = query ? ` WHERE (${definition.search.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(" OR ")})` : "";
     const term = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     const filterArgs = query ? definition.search.map(() => term) : [];

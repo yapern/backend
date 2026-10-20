@@ -1,6 +1,7 @@
 import { AuthError, authJson, readJSON, type AuthUser, type StringHeaders } from "./auth-core";
 import { issueAppTokens } from "./auth-app";
 import { absorbAnonymousHerds } from "./auth-anonymous";
+import { AppleCredentialSchema } from "./auth-schemas";
 
 const APPLE_ISSUER = "https://appleid.apple.com";
 const APPLE_KEYS_URL = "https://appleid.apple.com/auth/keys";
@@ -41,11 +42,11 @@ export async function verifyAppleIdentityToken(
   token: unknown,
   nonce: unknown,
 ): Promise<{ sub: string; email: string | null }> {
-  if (typeof token !== "string" || token.length > 10_000
-    || typeof nonce !== "string" || nonce.length < 32 || nonce.length > 200) {
+  const parsed = AppleCredentialSchema.safeParse({ identity_token: token, nonce });
+  if (!parsed.success) {
     throw new AuthError("Invalid Apple credential.");
   }
-  const parts = token.split(".");
+  const parts = parsed.data.identity_token.split(".");
   if (parts.length !== 3) throw new AuthError("Invalid Apple credential.");
   const header = decodeObject(parts[0]);
   const claims = decodeObject(parts[1]);
@@ -59,7 +60,7 @@ export async function verifyAppleIdentityToken(
     || typeof claims.sub !== "string" || !claims.sub || claims.sub.length > 200
     || typeof claims.exp !== "number" || claims.exp <= now
     || typeof claims.iat !== "number" || claims.iat > now + 60
-    || claims.nonce !== await nonceHash(nonce)) {
+    || claims.nonce !== await nonceHash(parsed.data.nonce)) {
     throw new AuthError("Invalid Apple credential.");
   }
 

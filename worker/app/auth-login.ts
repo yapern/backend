@@ -11,6 +11,7 @@ import {
 } from "./auth-core";
 import { issueAppTokens } from "./auth-app";
 import { absorbAnonymousHerds } from "./auth-anonymous";
+import { EmailLoginSchema } from "./auth-schemas";
 
 const REVIEW_LOGIN_EMAIL = "test@andrewarrow.dev";
 const REVIEW_LOGIN_PASSWORD = "testing";
@@ -47,10 +48,11 @@ export async function handleEmailLogin(
   env: Env,
   corsHeaders: StringHeaders,
 ): Promise<Response> {
-  const body = await readJSON(request, 2_000);
-  if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+  const parsed = EmailLoginSchema.safeParse(await readJSON(request, 2_000));
+  if (!parsed.success) {
     return authJson({ error: "invalid_request" }, 400, corsHeaders);
   }
+  const body = parsed.data;
 
   if (body.email.trim().toLowerCase() !== REVIEW_LOGIN_EMAIL || body.password !== REVIEW_LOGIN_PASSWORD) {
     return authJson({ error: "invalid_credentials" }, 401, corsHeaders);
@@ -93,10 +95,11 @@ export async function handleNativeEmailLogin(
   env: Env,
   corsHeaders: StringHeaders,
 ): Promise<Response> {
-  const body = await readJSON(request, 2_000);
-  if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+  const parsed = EmailLoginSchema.safeParse(await readJSON(request, 2_000));
+  if (!parsed.success) {
     return authJson({ error: "invalid_request" }, 400, corsHeaders);
   }
+  const body = parsed.data;
   if (body.email.trim().toLowerCase() !== REVIEW_LOGIN_EMAIL || body.password !== REVIEW_LOGIN_PASSWORD) {
     return authJson({ error: "invalid_credentials" }, 401, corsHeaders);
   }

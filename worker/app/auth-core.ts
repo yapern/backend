@@ -1,4 +1,5 @@
 import { jsonResponse } from "../shared/http";
+import { GoogleCredentialSchema } from "./auth-schemas";
 
 const AUTH_COOKIE_NAME = "groupicorn_session";
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -52,13 +53,13 @@ export function authCorsHeaders(request: Request): StringHeaders | null {
     return null;
   }
 
-  if (!AUTH_ORIGINS.has(origin)) return null;
+  if (!AUTH_ORIGINS.has(origin) && origin !== new URL(request.url).origin) return null;
 
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-credentials": "true",
     "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type, authorization",
     "access-control-max-age": "600",
     vary: "Origin",
   };
@@ -113,11 +114,12 @@ function decodeJSONPart(value: unknown): Record<string, unknown> | null {
 }
 
 export async function verifyGoogleIdToken(credential: unknown, env: Env): Promise<GoogleIdentity> {
-  if (typeof credential !== "string" || credential.length > 10_000) {
+  const parsed = GoogleCredentialSchema.safeParse(credential);
+  if (!parsed.success) {
     throw new AuthError("Invalid Google credential.");
   }
 
-  const parts = credential.split(".");
+  const parts = parsed.data.split(".");
   if (parts.length !== 3) throw new AuthError("Invalid Google credential.");
 
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
