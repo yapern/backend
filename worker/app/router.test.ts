@@ -32,14 +32,41 @@ test("state rejects non-GET requests", async () => {
   assert.equal(response.headers.get("allow"), "GET");
 });
 
-test("IOP tracking requires an authenticated session", async () => {
+test("retired routes return not found", async (t) => {
+  const retiredRoutes = [
+    ["IOP", "/iop/tracked-programs"],
+    ["directory", "/directory/locations"],
+    ["map tiles", "/map/tiles/1/2/3"],
+    ["reviews", "/reviews"],
+    ["tour requests", "/tour-requests"],
+    ["directory herd", "/directory/locations/example/herd"],
+    ["herds", "/herds"],
+    ["Apple IAP notifications", "/iap/apple/notifications"],
+  ] as const;
+
+  for (const [name, path] of retiredRoutes) {
+    await t.test(name, async () => {
+      const response = await handleRequest(
+        new Request(`https://api.groupicorn.com${path}`),
+        {} as Env,
+      );
+
+      assert.equal(response.status, 404);
+      assert.deepEqual(await response.json(), { error: "not_found" });
+    });
+  }
+});
+
+test("legacy app exchange returns not found", async () => {
   const response = await handleRequest(
-    new Request("https://api.groupicorn.com/iop/tracked-programs"),
+    new Request("https://api.groupicorn.com/auth/app/legacy-exchange", {
+      method: "POST",
+    }),
     {} as Env,
   );
 
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { error: "unauthorized" });
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "not_found" });
 });
 
 test("auth preflight allows the web origin", async () => {
