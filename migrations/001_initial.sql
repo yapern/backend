@@ -1,4 +1,4 @@
--- Initial Groupicorn D1 migration.
+-- Initial Yapern D1 migration.
 -- Add application tables here as the backend takes shape.
 
 CREATE TABLE IF NOT EXISTS users (
