@@ -4,12 +4,22 @@ import { protectedSecurity } from "./contracts";
 import { previewImage, previewStatus, requestPreview } from "./preview-jobs";
 import { errorResult, jsonResult, registerRoute, type Api } from "../shared/openapi";
 
+const DiagnosticSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  httpStatus: z.number().int().optional().describe("Website HTTP status for page failures; browser service HTTP status for service failures."),
+  contentType: z.string().optional(),
+  providerCode: z.number().int().optional(),
+});
 const PreviewSchema = z.object({
   image: z.string().url().nullable(),
   source: z.enum(["og", "twitter", "screenshot", "favicon", "placeholder"]),
   status: z.enum(["ready", "pending", "failed"]),
   previewId: z.string().uuid().optional(),
   statusUrl: z.string().url().optional(),
+  error: z.string().optional().describe("Specific screenshot failure code, including on HTTP 200 terminal fallbacks."),
+  diagnostics: z.object({ metadata: DiagnosticSchema.optional(), screenshot: DiagnosticSchema.optional() }).optional()
+    .describe("Reasons metadata or screenshot generation fell back. Present on queued, failed, and cached results when available."),
 }).openapi("LinkPreview");
 const RequestSchema = z.object({ url: z.string().min(1).max(2048) }).strict().openapi("LinkPreviewRequest");
 const IdSchema = z.object({ id: z.string().uuid() });

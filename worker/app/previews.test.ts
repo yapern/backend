@@ -75,6 +75,7 @@ test("lookup refuses a redirect to a private address", async () => {
   }) as typeof fetch;
   assert.deepEqual(await lookupPreview("https://example.com", fetcher, publicDns), {
     image: null, source: "placeholder", status: "failed",
+    diagnostics: { metadata: { code: "preview_redirect_not_allowed", message: "The website redirected to a URL that is not allowed for previews.", httpStatus: 302 } },
   });
   assert.equal(calls, 1);
 });
@@ -88,6 +89,7 @@ test("DNS check blocks a public-looking hostname that resolves to a private addr
   };
   assert.deepEqual(await lookupPreview("https://public-looking.example.com", fetcher, privateDns), {
     image: null, source: "placeholder", status: "failed",
+    diagnostics: { metadata: { code: "preview_dns_not_public", message: "The website hostname resolves to a private or reserved network address." } },
   });
   assert.equal(calls, 0);
 });
@@ -104,6 +106,7 @@ test("DNS check validates each redirect destination before fetching", async () =
   };
   assert.deepEqual(await lookupPreview("https://example.com", fetcher, redirectDns), {
     image: null, source: "placeholder", status: "failed",
+    diagnostics: { metadata: { code: "preview_dns_not_public", message: "The website hostname resolves to a private or reserved network address." } },
   });
   assert.deepEqual(requested, ["https://example.com/"]);
 });
@@ -130,18 +133,37 @@ test("favicon fallback requires an image content type", async () => {
   }) as typeof fetch;
   assert.deepEqual(await lookupPreview("https://example.com/article", fetcher, publicDns), {
     image: "https://example.com/site.ico", source: "favicon", status: "failed",
+    diagnostics: { metadata: { code: "preview_metadata_missing", message: "No usable Open Graph or Twitter image was found in the first 256 KiB of page HTML.", httpStatus: 200, contentType: "text/html; charset=utf-8" } },
   });
   assert.deepEqual(calls, ["https://example.com/article", "https://example.com/site.ico"]);
 });
 
-test("non-HTML responses and metadata beyond the byte limit return a placeholder", async () => {
-  const fetcher = (async (input: RequestInfo | URL) => {
-    if (String(input).endsWith("favicon.ico")) return new Response("missing", { status: 404 });
-    return htmlResponse(`${" ".repeat(260 * 1024)}<meta property="og:image" content="https://cdn.example/too-late.png">`);
-  }) as typeof fetch;
-  assert.deepEqual(await lookupPreview("https://example.com", fetcher, publicDns), {
-    image: null, source: "placeholder", status: "failed",
-  });
+test("metadata fallbacks distinguish HTTP, content type, empty HTML, missing tags, and transport failures", async () => {
+  const cases: Array<{ name: string; fetcher: typeof fetch; code: string; httpStatus?: number; contentType?: string }> = [
+    { name: "HTTP failure", fetcher: (async (input: RequestInfo | URL) => String(input).endsWith("favicon.ico")
+      ? new Response("missing", { status: 404 }) : htmlResponse("blocked", 403)), code: "preview_http_error", httpStatus: 403, contentType: "text/html; charset=utf-8" },
+    { name: "non HTML", fetcher: (async (input: RequestInfo | URL) => String(input).endsWith("favicon.ico")
+      ? new Response("missing", { status: 404 }) : new Response("image", { headers: { "content-type": "image/png" } })), code: "preview_non_html", httpStatus: 200, contentType: "image/png" },
+    { name: "empty HTML", fetcher: (async (input: RequestInfo | URL) => String(input).endsWith("favicon.ico")
+      ? new Response("missing", { status: 404 }) : htmlResponse("")), code: "preview_empty_html", httpStatus: 200, contentType: "text/html; charset=utf-8" },
+    { name: "missing metadata beyond bound", fetcher: (async (input: RequestInfo | URL) => String(input).endsWith("favicon.ico")
+      ? new Response("missing", { status: 404 }) : htmlResponse(`${" ".repeat(260 * 1024)}<meta property="og:image" content="https://cdn.example/too-late.png">`)), code: "preview_metadata_missing", httpStatus: 200, contentType: "text/html; charset=utf-8" },
+    { name: "fetch transport failure", fetcher: (async () => { throw Object.assign(new Error("private detail"), { code: "ECONNRESET" }); }) as typeof fetch, code: "preview_connection_failed" },
+  ];
+  for (const item of cases) {
+    const result = await lookupPreview("https://example.com", item.fetcher, publicDns);
+    assert.equal(result.status, "failed", item.name);
+    assert.equal(result.diagnostics?.metadata?.code, item.code, item.name);
+    assert.equal(result.diagnostics?.metadata?.httpStatus, item.httpStatus, item.name);
+    assert.equal(result.diagnostics?.metadata?.contentType, item.contentType, item.name);
+    assert.ok(!JSON.stringify(result).includes("private detail"), item.name);
+  }
+});
+
+test("DNS lookup with no records is distinct from a private address", async () => {
+  const noRecords: DnsResolver = { resolve4: async () => { throw new Error("ENODATA"); }, resolve6: async () => { throw new Error("ENODATA"); } };
+  const result = await lookupPreview("https://example.com", async () => htmlResponse("<body>ok</body>"), noRecords);
+  assert.equal(result.diagnostics?.metadata?.code, "preview_dns_failed");
 });
 
 test("preview route requires a session and validates URL and request fields before lookup", async t => {
@@ -210,6 +232,18 @@ test("preview routes poll privately, expose retry headers, and serve public R2 J
   assert.equal(pending.headers.get("access-control-expose-headers"), "Retry-After");
   assert.deepEqual(await pending.json(), { image: null, source: "placeholder", status: "pending", previewId: id,
     statusUrl: `${origin}/previews/${id}` });
+  store.sqlite.prepare("UPDATE link_previews SET state='failed',error='preview_challenge',diagnostics=? WHERE id=?")
+    .run(JSON.stringify({ metadata: { code: "preview_non_html", message: "raw provider output", httpStatus: 200, contentType: "text/html" },
+      screenshot: { code: "preview_challenge", message: "untrusted cached message", providerCode: 42 } }), id);
+  const failed = await request(`/previews/${id}`, { headers: { authorization } });
+  assert.equal(failed.status, 200);
+  const failedBody = await failed.json() as { error: string; diagnostics: { metadata: { message: string }; screenshot: { message: string; providerCode: number } } };
+  assert.equal(failedBody.error, "preview_challenge");
+  assert.equal(failedBody.diagnostics.metadata.message, "The website returned a content type other than HTML.");
+  assert.equal(failedBody.diagnostics.screenshot.message, "The rendered page contains a bot check or CAPTCHA.");
+  assert.equal(failedBody.diagnostics.screenshot.providerCode, 42);
+  assert.ok(!JSON.stringify(failedBody).includes("untrusted cached message"));
+  assert.ok(!JSON.stringify(failedBody).includes("raw provider output"));
   const otherId = "1fb3ca45-cc7f-438d-8d94-d8fd1c039222";
   assert.equal((await request(`/previews/${otherId}`, { headers: { authorization } })).status, 404);
   assert.equal((await request(`/preview-images/${id}.jpg`)).status, 404);

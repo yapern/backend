@@ -55,6 +55,16 @@ handles this polling and cancellation. Status URLs are private to their owner;
 `GET` and `HEAD /preview-images/{id}.jpg` serve the JPEG publicly so it can be
 displayed in shared messages.
 
+Fallback responses include `diagnostics.metadata` and/or
+`diagnostics.screenshot` when a stage failed. Each diagnostic has a stable
+`code` and a curated `message`, with `httpStatus` and `contentType` when
+available; browser service failures may also include the numeric `providerCode`.
+Terminal screenshot failures also set top-level `error` to the specific
+screenshot code, including when the endpoint returns HTTP 200. The API does not
+return raw browser provider messages. Worker logs use the `[link-preview]`
+prefix and include the preview ID, target host, HTTP status, diagnostic,
+elapsed time, and internal error details for investigation.
+
 Jobs deduplicate normalized URLs per user. Screenshots expire after 14 days;
 failures are cached for six hours. Limits are 100 new screenshots per user per
 UTC day and 1,000 cached jobs per user. Queue consumers use expiring leases to
@@ -63,7 +73,10 @@ removes expired jobs and R2 objects, including objects belonging to deleted
 accounts. Rendering rejects unsafe destinations, blank/error/challenge pages,
 oversized images, and requests exceeding the 25-second browser deadline.
 
-Apply migration `005_link_previews.sql` before deploying this feature. Wrangler
+Apply migrations `005_link_previews.sql` and `006_preview_diagnostics.sql` in
+order before deploying this feature. Migration 006 adds stored diagnostics to
+preview jobs. Failures already cached for six hours before that migration have
+no recorded details and can only report their legacy error code. Wrangler
 binds the `yapern-previews` queue as `PREVIEW_QUEUE` and configures its consumer
 and cleanup cron. If it does not exist yet, create it with
 `npx wrangler queues create yapern-previews` before deploying. The browser

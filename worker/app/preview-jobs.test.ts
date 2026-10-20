@@ -5,6 +5,7 @@ import {
   previewStatus, renderScreenshot, requestPreview, usablePreview,
 } from "./preview-jobs";
 import type { DnsResolver } from "./preview-metadata";
+import { PreviewFailure } from "./preview-diagnostics";
 import { ApiError } from "./contracts";
 import { createTestDatabase } from "../testing/database";
 
@@ -112,7 +113,8 @@ function delivery(id: string | unknown, actions: { ack?: number; retry?: Array<{
 
 async function pending(t: TestContext, url = "https://example.com/article", userId = "user-1") {
   const f = await fixture(t);
-  const requested = await requestPreview(f.env, userId, url, origin, async () => ({ image: "https://example.com/icon.png", source: "favicon", status: "failed" }));
+  const requested = await requestPreview(f.env, userId, url, origin, async () => ({ image: "https://example.com/icon.png", source: "favicon", status: "failed",
+    diagnostics: { metadata: { code: "preview_metadata_missing" as const, message: "Untrusted input is replaced from the reason code.", httpStatus: 200, contentType: "text/html" } } }));
   assert.ok("previewId" in requested.data);
   return { ...f, requested };
 }
@@ -197,6 +199,13 @@ test("worker failure is cached and falls back to metadata; queue loss is recover
   assert.equal(failed.data.status, "failed");
   assert.equal(failed.data.image, "https://example.com/icon.png");
   assert.equal(failed.data.source, "favicon");
+  assert.equal(failed.data.error, "preview_failed");
+  assert.deepEqual(failed.data.diagnostics, {
+    metadata: { code: "preview_metadata_missing", message: "No usable Open Graph or Twitter image was found in the first 256 KiB of page HTML.", httpStatus: 200, contentType: "text/html" },
+    screenshot: { code: "preview_failed", message: "The screenshot job failed; no more specific reason was recorded." },
+  });
+  const cachedFailed = await requestPreview(f.env, "user-1", "https://example.com/article", origin, async () => { throw Error("must not look up"); });
+  assert.deepEqual(cachedFailed.data, failed.data, "cached request retains both diagnostic stages");
   assert.equal(f.queue.sent.length, 1);
   await consumePreviews(delivery(id).batch, f.env, async () => jpeg);
   assert.equal((await previewStatus(f.env, "user-1", id, origin)).data.status, "failed");
@@ -209,6 +218,18 @@ test("worker failure is cached and falls back to metadata; queue loss is recover
   await consumePreviews(redelivery.batch, f.env, async () => jpeg);
   assert.equal(redelivery.actions.ack, 1);
   assert.equal((await previewStatus(f.env, "user-1", id, origin)).data.status, "ready");
+});
+
+test("legacy failed rows reconstruct a curated screenshot diagnostic from the old error field", async t => {
+  const f = await fixture(t);
+  const id = "legacy-preview";
+  f.store.sqlite.prepare(`INSERT INTO link_previews(id,user_id,url_hash,url,state,error,lease_until,expires_at,created_at)
+    VALUES(?,?,?,?,'failed','preview_unusable',0,?,?)`).run(id, "user-1", "legacy-hash", "https://example.com/legacy", Date.now() + 1_000_000, Date.now());
+  const result = await previewStatus(f.env, "user-1", id, origin);
+  assert.equal(result.data.error, "preview_unusable");
+  assert.deepEqual(result.data.diagnostics?.screenshot, {
+    code: "preview_unusable", message: "The cached screenshot was rejected as blank, blocked, or an error page; no more specific reason was recorded.",
+  });
 });
 
 test("polling recovers an expired pending lease and duplicate deliveries do not rerender a ready preview", async t => {
@@ -315,12 +336,14 @@ test("browser renderer blocks private initial, final, and redirect destinations"
   let navigations = 0;
   const env = { BROWSER: { async quickAction() { navigations++; return snapshotResponse(); } } } as unknown as Env;
   const privateDns: DnsResolver = { resolve4: async () => ["10.0.0.1"], resolve6: async () => [] };
-  await assert.rejects(renderScreenshot(env, "https://example.com/", privateDns), /preview_url_not_allowed|Unsafe preview DNS destination/);
+  await assert.rejects(renderScreenshot(env, "https://example.com/", privateDns), error => error instanceof PreviewFailure
+    && error.diagnostic.code === "preview_dns_not_public");
   assert.equal(navigations, 0);
   for (const meta of [{ finalUrl: "https://private.example.com/" }, { redirects: [{ url: "https://private.example.com/" }] }]) {
     const dns: DnsResolver = { resolve4: async host => [host.startsWith("private.") ? "192.168.0.4" : "1.1.1.1"], resolve6: async () => [] };
     const responseEnv = { BROWSER: { async quickAction() { return snapshotResponse(meta); } } } as unknown as Env;
-    await assert.rejects(renderScreenshot(responseEnv, "https://example.com/", dns), /Unsafe preview DNS destination/);
+    await assert.rejects(renderScreenshot(responseEnv, "https://example.com/", dns), error => error instanceof PreviewFailure
+      && error.diagnostic.code === "preview_dns_not_public");
   }
 });
 
@@ -330,13 +353,70 @@ test("unusable browser pages, failed snapshots, and malformed or oversized JPEGs
   assert.equal(usablePreview(`<body>${"x".repeat(100)}<div id="cf-chl-widget"></div></body>`, { status: 200, title: "Fine" }), false);
   assert.equal(usablePreview("<body><script>" + "x".repeat(100) + "</script></body>", { status: 200, title: "Fine" }), false);
   const blankEnv = { BROWSER: { async quickAction() { return snapshotResponse({ content: "<html><body>tiny</body></html>" }); } } } as unknown as Env;
-  await assert.rejects(renderScreenshot(blankEnv, "https://example.com/", publicDns), /preview_unusable/);
+  await assert.rejects(renderScreenshot(blankEnv, "https://example.com/", publicDns), error => error instanceof PreviewFailure
+    && error.diagnostic.code === "preview_blank_page");
   const errorEnv = { BROWSER: { async quickAction() { return new Response("failed", { status: 502 }); } } } as unknown as Env;
   await assert.rejects(renderScreenshot(errorEnv, "https://example.com/", publicDns), /preview_browser_failed/);
   for (const screenshot of [Buffer.from("not jpeg").toString("base64"), Buffer.from([0xff, 0xd8, 0, 0xff, 0xd9]).toString("base64"), Buffer.alloc(PREVIEW_LIMITS.imageBytes + 1, 1).toString("base64")]) {
     const badImage = { BROWSER: { async quickAction() { return snapshotResponse({ screenshot }); } } } as unknown as Env;
     await assert.rejects(renderScreenshot(badImage, "https://example.com/", publicDns), /preview_invalid_image/);
   }
+});
+
+test("browser page rejections keep distinct curated reasons and website status", async () => {
+  const cases = [
+    { title: "Just a moment", content: "", code: "preview_challenge" },
+    { title: "Access denied", content: "", code: "preview_access_denied" },
+    { title: "Sign in", content: "", code: "preview_login_required" },
+    { title: "Page not found", content: "", code: "preview_error_page" },
+    { title: "Example", content: '<body><div class="onetrust-banner-sdk">consent</div></body>', code: "preview_consent_overlay" },
+    { title: "Example", content: "tiny", code: "preview_blank_page" },
+    { title: "Example", content: "Enough visible text ".repeat(5), status: 503, code: "preview_http_error" },
+  ];
+  for (const item of cases) {
+    const env = { BROWSER: { async quickAction() { return snapshotResponse(item); } } } as unknown as Env;
+    await assert.rejects(renderScreenshot(env, "https://example.com/", publicDns), error => error instanceof PreviewFailure
+      && error.diagnostic.code === item.code
+      && error.diagnostic.httpStatus === (item.status ?? 200), item.code);
+  }
+});
+
+test("browser service diagnostics retain HTTP and provider codes without exposing provider messages", async () => {
+  const rawMessage = "net::ERR_NAME_NOT_RESOLVED internal host detail";
+  const env = { BROWSER: { async quickAction() { return new Response(JSON.stringify({ success: false,
+    errors: [{ code: 1003, message: rawMessage }] }), { status: 502 }); } } } as unknown as Env;
+  await assert.rejects(renderScreenshot(env, "https://example.com/", publicDns), error => {
+    if (!(error instanceof PreviewFailure)) return false;
+    const diagnostic = error.diagnostic;
+    return diagnostic.code === "preview_dns_failed" && diagnostic.httpStatus === 502 && diagnostic.providerCode === 1003
+      && !diagnostic.message.includes(rawMessage);
+  });
+});
+
+test("invalid, incomplete, and non-success browser snapshots get distinct safe diagnostics", async () => {
+  const cases = [
+    { body: "not json", status: 200, code: "preview_invalid_snapshot" },
+    { body: "not json", status: 502, code: "preview_browser_failed" },
+    { body: "null", status: 200, code: "preview_invalid_snapshot" },
+    { body: JSON.stringify({ success: true, result: {}, meta: {} }), status: 200, code: "preview_invalid_snapshot" },
+  ];
+  for (const item of cases) {
+    const env = { BROWSER: { async quickAction() { return new Response(item.body, { status: item.status }); } } } as unknown as Env;
+    await assert.rejects(renderScreenshot(env, "https://example.com/", publicDns), error => error instanceof PreviewFailure
+      && error.diagnostic.code === item.code
+      && error.diagnostic.httpStatus === item.status, item.body);
+  }
+});
+
+test("storage write failures are saved separately from renderer failures", async t => {
+  const f = await pending(t);
+  f.bucket.put = async () => { throw new Error("private storage detail"); };
+  const work = delivery(previewId(f.requested));
+  await consumePreviews(work.batch, f.env, async () => jpeg);
+  const failed = await previewStatus(f.env, "user-1", previewId(f.requested), origin);
+  assert.equal(failed.data.error, "preview_storage_failed");
+  assert.equal(failed.data.diagnostics?.screenshot?.code, "preview_storage_failed");
+  assert.ok(!JSON.stringify(failed.data).includes("private storage detail"));
 });
 
 test("snapshot body limits and deadline abort both late browser responses and hanging body reads", async () => {

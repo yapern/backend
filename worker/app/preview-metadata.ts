@@ -1,6 +1,7 @@
 import { resolve4, resolve6 } from "node:dns/promises";
 import { isIP } from "node:net";
 import { ApiError } from "./contracts";
+import { failureDiagnostic, previewDiagnostic, PreviewFailure, type PreviewDiagnostics } from "./preview-diagnostics";
 
 const MAX_HTML_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
@@ -11,6 +12,7 @@ export type MetadataPreview = {
   image: string | null;
   source: "og" | "twitter" | "favicon" | "placeholder";
   status: "ready" | "failed";
+  diagnostics?: PreviewDiagnostics;
 };
 
 export type DnsResolver = {
@@ -81,9 +83,8 @@ export async function checkPublicDns(hostname: string, resolver: DnsResolver, si
       aborted,
     ]);
     const addresses = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-    if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address))) {
-      throw new Error("Unsafe preview DNS destination");
-    }
+    if (addresses.length === 0) throw new PreviewFailure("preview_dns_failed");
+    if (addresses.some((address) => !isPublicAddress(address))) throw new PreviewFailure("preview_dns_not_public");
   } finally {
     if (abortListener) signal.removeEventListener("abort", abortListener);
   }
@@ -190,10 +191,11 @@ async function fetchWithSafeRedirects(
     const location = response.headers.get("location");
     await response.body?.cancel();
     const next = location && safePublicUrl(location, url);
-    if (!next || redirects === MAX_REDIRECTS) throw new Error("Unsafe or excessive preview redirect");
+    if (!next) throw new PreviewFailure("preview_redirect_not_allowed", { httpStatus: response.status });
+    if (redirects === MAX_REDIRECTS) throw new PreviewFailure("preview_redirect_limit", { httpStatus: response.status });
     url = next;
   }
-  throw new Error("Excessive preview redirects");
+  throw new PreviewFailure("preview_redirect_limit");
 }
 
 async function readBoundedHtml(response: Response): Promise<string | null> {
@@ -249,26 +251,35 @@ export async function lookupPreview(
     await checkPublicDns(hostname, resolver, signal);
     checkedHosts.add(hostname);
   };
+  let diagnostic = previewDiagnostic("preview_metadata_missing");
   try {
     const { response, url } = await fetchWithSafeRedirects(
       start, fetcher, signal, checkHost, "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
     );
+    const details = { httpStatus: response.status, contentType: (response.headers.get("content-type") ?? "").slice(0, 120) };
+    diagnostic = previewDiagnostic(!response.ok ? "preview_http_error"
+      : !/^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(details.contentType) ? "preview_non_html"
+        : "preview_metadata_missing", details);
     const html = await readBoundedHtml(response);
+    if (html === "" || (html === null && diagnostic.code === "preview_metadata_missing")) {
+      diagnostic = previewDiagnostic("preview_empty_html", details);
+    }
     if (html) {
       const metadata = extractMetadata(html, url);
       if (metadata.og) return { image: metadata.og.toString(), source: "og", status: "ready" };
       if (metadata.twitter) return { image: metadata.twitter.toString(), source: "twitter", status: "ready" };
       if (metadata.favicon && await usableFavicon(metadata.favicon, fetcher, signal, checkHost)) {
-        return { image: metadata.favicon.toString(), source: "favicon", status: "failed" };
+        return { image: metadata.favicon.toString(), source: "favicon", status: "failed", diagnostics: { metadata: diagnostic } };
       }
     }
     const favicon = safePublicUrl("/favicon.ico", url);
     if (favicon && await usableFavicon(favicon, fetcher, signal, checkHost)) {
-      return { image: favicon.toString(), source: "favicon", status: "failed" };
+      return { image: favicon.toString(), source: "favicon", status: "failed", diagnostics: { metadata: diagnostic } };
     }
-  } catch {
+  } catch (error) {
     // Preview failure should not block sending a message with this link.
+    diagnostic = failureDiagnostic(error, "preview_fetch_failed", signal);
   }
-  return { image: null, source: "placeholder", status: "failed" };
+  return { image: null, source: "placeholder", status: "failed", diagnostics: { metadata: diagnostic } };
 }
 

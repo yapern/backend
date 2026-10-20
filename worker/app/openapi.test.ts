@@ -105,6 +105,20 @@ test("OpenAPI contains only current schemas and tags", async () => {
   ]);
 });
 
+test("OpenAPI describes preview diagnostic stages and safe failure fields", async () => {
+  const doc = await document();
+  const preview = doc.components.schemas.LinkPreview as { properties?: Record<string, { properties?: Record<string, unknown> }> };
+  assert.ok(preview.properties?.diagnostics);
+  assert.ok(preview.properties?.error);
+  const stages = preview.properties!.diagnostics.properties!;
+  assert.ok(stages.metadata);
+  assert.ok(stages.screenshot);
+  for (const stage of [stages.metadata, stages.screenshot]) {
+    const fields = (stage as { properties?: Record<string, unknown> }).properties!;
+    for (const field of ["code", "message", "httpStatus", "contentType", "providerCode"]) assert.ok(field in fields, field);
+  }
+});
+
 test("OpenAPI marks every write and session operation as authenticated", async () => {
   const doc = await document();
   for (const [path, methods] of Object.entries(doc.paths)) {
