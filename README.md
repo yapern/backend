@@ -29,6 +29,7 @@ API routes:
 | GET / HEAD | `/board-messages/:filename` | Read a public message image from R2 |
 | DELETE | `/tables/messages` | Delete your message and its replies |
 | GET | `/tables/replies` | Read replies |
+| GET | `/search` | Full-text search over public messages or boards |
 | POST | `/tables/replies` | Reply to an original message |
 | GET | `/notifications` | Read your latest 50 reply notifications and total unread count |
 | POST | `/notifications/read` | Mark notifications through an observed ID as read |
@@ -46,6 +47,31 @@ Responses retain the frontend's `{ "data": [...] }` shape. Profile updates
 require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
+
+Search uses D1 FTS5 indexes over message titles/bodies and board slugs/names/
+descriptions. Apply `011_full_text_search.sql` before deploying the API, then
+deploy the web app. The migration indexes existing content and creates triggers
+that maintain the indexes in the same transaction as inserts, edits, and deletes.
+Public text IDs remain unchanged; the indexes join on SQLite's integer rowid.
+
+Use `/search?q=sqlite+ind&type=messages&sort=relevance&limit=20&offset=0`.
+`q` accepts up to 200 characters and 20 words; all words must match, and the last
+word matches prefixes. Punctuation separates words and FTS operators are treated
+as literal words. Matching ignores case and diacritics; there is no typo or
+semantic matching. `type` is `messages` (default) or `boards`, `sort` is
+`relevance` (default) or `newest`, and optional `board` filters by an exact slug.
+Replies are not searched. Relevance weights message titles and board names/slugs
+above body text. Results include plain-text snippets and current author/board
+metadata; consumers must render snippets as text. Pagination accepts limits of
+1–50 and offsets of 0–1000. `meta.has_more` reports whether another permitted
+page exists, without running an unbounded count query. Search follows collection
+CORS rules and does not require a session.
+
+FTS indexes consume D1 storage and add work to content writes. Check query plans,
+`meta.rows_read`, and latency with realistic content before increasing traffic or
+pagination limits. Rebuild with `INSERT INTO messages_fts(messages_fts)
+VALUES('rebuild')` (and the equivalent for `boards_fts`) if needed after bulk data
+repair. Do not edit FTS shadow tables directly.
 
 Board edits require `id=eq.<board-id>` and the board creator's bearer session.
 Send JSON `{ "description": "..." }` to edit the description, adding
