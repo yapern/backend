@@ -9,7 +9,7 @@ type Operation = {
   security: Record<string, string[]>[];
   responses: Record<string, {
     description: string;
-    content: { "application/json": { schema: unknown } };
+    content: Record<string, { schema: unknown }>;
   }>;
 };
 type Document = {
@@ -47,11 +47,15 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "DELETE /auth/session",
     "DELETE /tables/messages",
     "GET /auth/session",
-    "GET /health", "GET /state",
+    "GET /health",
+    "GET /preview-images/{filename}",
+    "GET /previews/{id}",
+    "GET /state",
     "GET /tables/boards",
     "GET /tables/messages",
     "GET /tables/replies",
     "GET /tables/users",
+    "HEAD /preview-images/{filename}",
     "PATCH /tables/users",
     "POST /auth/email",
     "POST /og-image",
@@ -66,7 +70,8 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
       assert.ok(operation.operationId);
       assert.ok(!ids.has(operation.operationId), `Duplicate operationId: ${operation.operationId}`);
       ids.add(operation.operationId);
-      assert.ok((operation.responses["200"] ?? operation.responses["201"])?.content["application/json"].schema);
+      const success = operation.responses["200"] ?? operation.responses["201"];
+      assert.ok(Object.values(success.content).some(content => content.schema));
       for (const response of Object.values(operation.responses)) assert.ok(response.description);
       assert.ok(Array.isArray(operation.security));
       for (const security of operation.security) assert.deepEqual(security, { bearerAuth: [] });
@@ -104,7 +109,8 @@ test("OpenAPI marks every write and session operation as authenticated", async (
   const doc = await document();
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
-      const requiresSession = (method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email");
+      const requiresSession = path.startsWith("/previews/") ||
+        ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") && !path.startsWith("/preview-images/"));
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }

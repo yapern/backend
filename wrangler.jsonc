@@ -24,6 +24,30 @@
       "bucket_name": "romeo"
     }
   ],
+  "browser": {
+    "binding": "BROWSER",
+    "remote": true
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "PREVIEW_QUEUE",
+        "queue": "yapern-previews"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "yapern-previews",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 2,
+        "max_concurrency": 2
+      }
+    ]
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "observability": {
     "logs": {
       "enabled": true,

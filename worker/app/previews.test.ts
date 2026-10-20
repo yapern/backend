@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { extractMetadata, isPublicAddress, lookupPreview, safePublicUrl, type DnsResolver } from "./previews";
+import { extractMetadata, isPublicAddress, lookupPreview, safePublicUrl, type DnsResolver } from "./preview-metadata";
 import { handleRequest } from "./router";
 import { createTestDatabase } from "../testing/database";
 
@@ -173,4 +173,67 @@ test("preview route requires a session and validates URL and request fields befo
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error: "invalid_request" });
   }
+});
+
+test("preview routes poll privately, expose retry headers, and serve public R2 JPEGs", async t => {
+  const store = createTestDatabase();
+  t.after(() => store.close());
+  const id = "861232f2-d908-438f-b3ba-f46f718254e8";
+  const token = `bff_us_${"a".repeat(64)}`;
+  const origin = "https://api.yapern.com";
+  const authorization = `Bearer ${token}`;
+  store.sqlite.prepare("INSERT INTO users(id,email) VALUES (?,?)").run("preview-user", "person@example.com");
+  store.sqlite.prepare("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)")
+    .run(createHash("sha256").update(token).digest("hex"), "preview-user", "2099-01-01T00:00:00.000Z");
+  store.sqlite.prepare(`INSERT INTO link_previews(id,user_id,url_hash,url,state,lease_until,expires_at,created_at)
+    VALUES(?,?,?,?,'pending',?,?,?)`).run(id, "preview-user", createHash("sha256").update("https://example.com/").digest("hex"),
+      "https://example.com/", Date.now() + 120_000, Date.now() + 3600_000, Date.now());
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  let reads = 0;
+  const env = { DB: store.db, BUCKET: {
+    get: async () => { reads++; return { body: new Response(jpeg).body, size: jpeg.length, httpEtag: '"test"' }; },
+    head: async () => ({ size: jpeg.length, httpEtag: '"test"' }),
+  } } as unknown as Env;
+  t.mock.method(globalThis, "fetch", () => assert.fail("Cached previews must not fetch metadata"));
+  const request = (path: string, init: RequestInit = {}) => handleRequest(new Request(`${origin}${path}`, init), env);
+  const preflight = await request(`/previews/${id}`, { method: "OPTIONS", headers: {
+    origin: "https://yapern.com", "access-control-request-method": "GET",
+    "access-control-request-headers": "authorization",
+  } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "https://yapern.com");
+  assert.equal((await request(`/previews/${id}`)).status, 401);
+  assert.equal((await request(`/previews/${id}`, { headers: { authorization, origin: "https://evil.example" } })).status, 403);
+  const pending = await request(`/previews/${id}`, { headers: { authorization, origin: "https://yapern.com" } });
+  assert.equal(pending.status, 202);
+  assert.equal(pending.headers.get("retry-after"), "3");
+  assert.equal(pending.headers.get("access-control-expose-headers"), "Retry-After");
+  assert.deepEqual(await pending.json(), { image: null, source: "placeholder", status: "pending", previewId: id,
+    statusUrl: `${origin}/previews/${id}` });
+  const otherId = "1fb3ca45-cc7f-438d-8d94-d8fd1c039222";
+  assert.equal((await request(`/previews/${otherId}`, { headers: { authorization } })).status, 404);
+  assert.equal((await request(`/preview-images/${id}.jpg`)).status, 404);
+  store.sqlite.prepare("UPDATE link_previews SET state='ready',object_key='cached.jpg',lease_until=0 WHERE id=?").run(id);
+  const cached = await request("/og-image", { method: "POST", headers: { authorization, "content-type": "application/json" },
+    body: JSON.stringify({ url: "https://example.com/#fragment" }) });
+  assert.equal(cached.status, 200);
+  const ready = await cached.json() as { image: string; source: string; status: string };
+  assert.equal(ready.image, `${origin}/preview-images/${id}.jpg`);
+  assert.equal(ready.source, "screenshot");
+  assert.equal(ready.status, "ready");
+  const image = await request(`/preview-images/${id}.jpg`, { headers: { origin: "https://other.example" } });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/jpeg");
+  assert.equal(image.headers.get("content-length"), String(jpeg.length));
+  assert.equal(image.headers.get("etag"), '"test"');
+  assert.equal(image.headers.get("access-control-allow-origin"), "*");
+  assert.match(image.headers.get("cache-control")!, /^public, max-age=/);
+  assert.equal(image.headers.get("x-content-type-options"), "nosniff");
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), jpeg);
+  const head = await request(`/preview-images/${id}.jpg`, { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(reads, 1, "HEAD reads R2 metadata without fetching the body");
+  store.sqlite.prepare("UPDATE link_previews SET expires_at=0 WHERE id=?").run(id);
+  assert.equal((await request(`/preview-images/${id}.jpg`)).status, 404);
 });

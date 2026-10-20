@@ -30,11 +30,12 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image"]) {
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image", "/previews/*"]) {
   app.use(path, cors({
     origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["apikey", "Authorization", "Content-Type"],
+    exposeHeaders: ["Retry-After"],
     maxAge: 600,
   }));
   app.use(path, async (c, next) => {
@@ -84,7 +85,7 @@ app.doc31("/openapi.json", {
   info: {
     title: "Yapern API",
     version: "1.0.0",
-    description: "Yapern accounts, boards, messages, replies, link metadata previews, and system endpoints. Responses are not cached.",
+    description: "Yapern accounts, boards, messages, replies, link previews with queued screenshots, and system endpoints. JSON responses are not cached; public screenshot images support caching.",
   },
   servers: [{ url: "/", description: "Current environment" }],
   tags: [
