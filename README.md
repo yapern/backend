@@ -7,13 +7,13 @@ changes. Tests use isolated in-memory SQLite databases and require Node 22.13+.
 Interactive API documentation is at `/docs`; the OpenAPI document is at
 `/openapi.json`.
 
-The existing frontend can use this backend by changing `apiOrigin` in
-`src/config.js` to `https://api.yapern.com` (or the local Worker URL).
-Its project ID remains `90da3093-84b6-4cd7-a39a-a8afc39403b8`. The legacy
-`apikey` header is accepted for compatibility; bearer sessions authorize writes.
-This backend serves this one Yapern project.
+For the frontend cutover, set `apiOrigin` in `src/config.js` to
+`https://api.yapern.com` (or the local Worker URL), use the routes below, and
+send preview requests as `{ "url": "https://example.com" }`. Remove the old
+`/bff/data/{projectId}` prefix from API paths. The legacy `apikey` header is
+accepted for compatibility; bearer sessions authorize writes.
 
-Routes under `/bff/data/{projectId}`:
+API routes:
 
 | Method | Path | Behavior |
 | --- | --- | --- |
@@ -37,10 +37,10 @@ require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
 
-`POST /bff/og-image` accepts `{ "url": "https://example.com", "projectId": "…" }`
-with a bearer session. It returns a terminal metadata preview using Open Graph,
-Twitter, or a favicon fallback. It does not schedule screenshots or return
-pending jobs, so the frontend does not need to poll for preview status.
+`POST /og-image` accepts `{ "url": "https://example.com" }` with a bearer
+session. It returns a terminal metadata preview using Open Graph, Twitter, or a
+favicon fallback. It does not schedule screenshots or return pending jobs, so
+the frontend does not need to poll for preview status.
 
 Browser requests are allowed from `https://yapern.com`, `https://www.yapern.com`,
 and localhost/127.0.0.1 on Vite ports 5173 and 4173. Set the optional Worker

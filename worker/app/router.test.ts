@@ -45,7 +45,6 @@ test("retired routes return not found", async (t) => {
     ["GET", "/herds"],
     ["POST", "/iap/apple/notifications"],
     ["POST", "/auth/google"],
-    ["POST", "/auth/email"],
     ["GET", "/auth/me"],
     ["POST", "/auth/logout"],
     ["POST", "/auth/app/anonymous"],

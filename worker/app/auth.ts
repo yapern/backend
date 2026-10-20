@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, scrypt, timingSafeEqual, createHash } from "node:crypto";
 import { z } from "@hono/zod-openapi";
-import { ApiError, ProjectParams, protectedSecurity } from "./contracts";
+import { ApiError, protectedSecurity } from "./contracts";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
 
 const TOKEN_PATTERN = /^bff_us_[a-f0-9]{64}$/;
@@ -140,9 +140,9 @@ export async function requireSession(request: Request, env: Env): Promise<Sessio
 
 export function registerAuthRoutes(app: Api): void {
   registerRoute(app, {
-    method: "post", path: "/bff/data/{projectId}/auth/email", operationId: "emailAuth",
+    method: "post", path: "/auth/email", operationId: "emailAuth",
     tags: ["Auth"], summary: "Sign in or create an email account", security: [],
-    request: { params: ProjectParams, body: { required: true, content: jsonContent(EmailBody) } },
+    request: { body: { required: true, content: jsonContent(EmailBody) } },
     responses: {
       200: jsonResult(AuthResult, "Signed in."),
       201: jsonResult(AuthResult, "Account created and signed in."),
@@ -182,9 +182,8 @@ export function registerAuthRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "get", path: "/bff/data/{projectId}/auth/session", operationId: "getAuthSession",
+    method: "get", path: "/auth/session", operationId: "getAuthSession",
     tags: ["Auth"], summary: "Check a bearer session", security: protectedSecurity,
-    request: { params: ProjectParams },
     responses: {
       200: jsonResult(z.object({ session: SessionSchema, user: UserSchema }).openapi("CurrentSession"), "Current session."),
       401: errorResult("Invalid or expired bearer token."),
@@ -200,9 +199,8 @@ export function registerAuthRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "delete", path: "/bff/data/{projectId}/auth/session", operationId: "revokeAuthSession",
+    method: "delete", path: "/auth/session", operationId: "revokeAuthSession",
     tags: ["Auth"], summary: "Revoke a bearer session", security: protectedSecurity,
-    request: { params: ProjectParams },
     responses: {
       200: jsonResult(z.object({ revoked: z.literal(true) }).openapi("RevokedSession"), "Token revoked."),
       401: errorResult("Invalid bearer token."),

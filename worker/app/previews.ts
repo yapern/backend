@@ -2,7 +2,7 @@ import { z } from "@hono/zod-openapi";
 import { resolve4, resolve6 } from "node:dns/promises";
 import { isIP } from "node:net";
 import { requireSession } from "./auth";
-import { ApiError, PROJECT_ID, protectedSecurity } from "./contracts";
+import { ApiError, protectedSecurity } from "./contracts";
 import { errorResult, jsonResult, registerRoute, type Api } from "../shared/openapi";
 
 const MAX_HTML_BYTES = 256 * 1024;
@@ -31,7 +31,6 @@ const PreviewSchema = z.object({
 
 const RequestSchema = z.object({
   url: z.string().min(1).max(MAX_URL_LENGTH),
-  projectId: z.literal(PROJECT_ID),
 }).strict().openapi("LinkPreviewRequest");
 
 /** Reject network destinations that can target a local or private service. */
@@ -288,13 +287,13 @@ export async function lookupPreview(
 
 export function registerPreviewRoutes(app: Api): void {
   registerRoute(app, {
-    method: "post", path: "/bff/og-image", operationId: "getLinkPreview",
+    method: "post", path: "/og-image", operationId: "getLinkPreview",
     tags: ["Previews"], summary: "Fetch image metadata for a shared link",
     security: protectedSecurity,
     request: { body: { required: true, content: { "application/json": { schema: RequestSchema } } } },
     responses: {
       200: jsonResult(PreviewSchema, "A terminal preview result."),
-      400: errorResult("Invalid project or URL."),
+      400: errorResult("Invalid URL."),
       401: errorResult("A valid session is required."),
     },
   }, async (c) => {

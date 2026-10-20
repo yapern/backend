@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { extractMetadata, isPublicAddress, lookupPreview, safePublicUrl, type DnsResolver } from "./previews";
 import { handleRequest } from "./router";
-import { PROJECT_ID } from "./contracts";
 import { createTestDatabase } from "../testing/database";
 
 const publicDns: DnsResolver = {
@@ -145,7 +144,7 @@ test("non-HTML responses and metadata beyond the byte limit return a placeholder
   });
 });
 
-test("preview route requires a session and validates project and URL before lookup", async t => {
+test("preview route requires a session and validates URL and request fields before lookup", async t => {
   const store = createTestDatabase();
   t.after(() => store.close());
   const env = { DB: store.db } as Env;
@@ -153,7 +152,7 @@ test("preview route requires a session and validates project and URL before look
   store.sqlite.prepare("INSERT INTO users(id,email) VALUES (?,?)").run("preview-user", "person@example.com");
   store.sqlite.prepare("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)")
     .run(createHash("sha256").update(token).digest("hex"), "preview-user", "2099-01-01T00:00:00.000Z");
-  const request = (body: unknown, authenticated: boolean) => handleRequest(new Request("https://api.yapern.com/bff/og-image", {
+  const request = (body: unknown, authenticated: boolean) => handleRequest(new Request("https://api.yapern.com/og-image", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -161,14 +160,14 @@ test("preview route requires a session and validates project and URL before look
     },
     body: JSON.stringify(body),
   }), env);
-  const valid = { url: "https://example.com", projectId: PROJECT_ID };
+  const valid = { url: "https://example.com" };
   const unauthorized = await request(valid, false);
   assert.equal(unauthorized.status, 401);
   assert.deepEqual(await unauthorized.json(), { error: "invalid_session" });
   for (const body of [
-    { ...valid, projectId: "wrong-project" },
     { ...valid, url: "http://127.0.0.1/admin" },
     { ...valid, extra: true },
+    { ...valid, projectId: "legacy-project" },
   ]) {
     const response = await request(body, true);
     assert.equal(response.status, 400);

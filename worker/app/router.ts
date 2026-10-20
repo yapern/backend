@@ -6,7 +6,7 @@ import { HTTPException } from "hono/http-exception";
 import { jsonResponse } from "../shared/http";
 import { errorResult, jsonResult, OkSchema, registerRoute, type ApiEnv } from "../shared/openapi";
 import { registerAuthRoutes } from "./auth";
-import { ApiError, PROJECT_ID } from "./contracts";
+import { ApiError } from "./contracts";
 import { registerDataRoutes } from "./data";
 import { registerPreviewRoutes } from "./previews";
 
@@ -30,25 +30,23 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-app.use("/bff/*", cors({
-  origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
-  allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowHeaders: ["apikey", "Authorization", "Content-Type"],
-  maxAge: 600,
-}));
-app.use("/bff/*", async (c, next) => {
-  const origin = c.req.header("origin");
-  if (origin && !allowedOrigins(c.env).includes(origin)) throw new ApiError(403, "origin_not_allowed");
-  await next();
-});
-app.use("/bff/*", bodyLimit({
-  maxSize: 16 * 1024,
-  onError: c => c.json({ error: "request_too_large" }, 413),
-}));
-app.use("/bff/data/:projectId/*", async (c, next) => {
-  if (c.req.param("projectId") !== PROJECT_ID) throw new ApiError(404, "not_found");
-  await next();
-});
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image"]) {
+  app.use(path, cors({
+    origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["apikey", "Authorization", "Content-Type"],
+    maxAge: 600,
+  }));
+  app.use(path, async (c, next) => {
+    const origin = c.req.header("origin");
+    if (origin && !allowedOrigins(c.env).includes(origin)) throw new ApiError(403, "origin_not_allowed");
+    await next();
+  });
+  app.use(path, bodyLimit({
+    maxSize: 16 * 1024,
+    onError: c => c.json({ error: "request_too_large" }, 413),
+  }));
+}
 
 app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
   type: "http", scheme: "bearer",
@@ -86,7 +84,7 @@ app.doc31("/openapi.json", {
   info: {
     title: "Yapern API",
     version: "1.0.0",
-    description: "Yapern accounts, boards, messages, replies, link metadata previews, and system endpoints. Existing /bff routes and response shapes are retained for browser compatibility; this API serves only Yapern. Responses are not cached.",
+    description: "Yapern accounts, boards, messages, replies, link metadata previews, and system endpoints. Responses are not cached.",
   },
   servers: [{ url: "/", description: "Current environment" }],
   tags: [

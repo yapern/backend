@@ -4,9 +4,7 @@ import { handleRequest } from "./router";
 import { createTestDatabase } from "../testing/database";
 
 const origin = "https://api.yapern.com";
-const projectId = "90da3093-84b6-4cd7-a39a-a8afc39403b8";
 const apiKey = "bff_pk_1f9bb9fd543d6a5476ad7ce210577c2479d290a5cdc06282de9eb884d57005c4";
-const basePath = `/bff/data/${projectId}`;
 
 type UserSession = { token: string; user: { id: string; email: string } };
 type Row = Record<string, unknown>;
@@ -20,7 +18,7 @@ async function fixture(t: TestContext) {
     new Request(`${origin}${path}`, init), env,
   );
   const signIn = async (email: string): Promise<UserSession> => {
-    const response = await request(`${basePath}/auth/email`, {
+    const response = await request("/auth/email", {
       method: "POST",
       headers: { apikey: apiKey, "content-type": "application/json" },
       body: JSON.stringify({ email, password: "correct horse battery" }),
@@ -35,7 +33,7 @@ async function fixture(t: TestContext) {
     authorization: `Bearer ${session.token}`,
     ...headers,
   });
-  const table = (name: string) => `${basePath}/tables/${name}`;
+  const table = (name: string) => `/tables/${name}`;
   return { database, request, signIn, authorized, table };
 }
 
@@ -196,7 +194,7 @@ test("writes derive the author from the bearer and reject missing, expired, or r
   assert.equal(expired.status, 401);
 
   const fresh = await api.signIn("revoked@example.com");
-  const revoked = await api.request(`${basePath}/auth/session`, {
+  const revoked = await api.request("/auth/session", {
     method: "DELETE", headers: api.authorized(fresh),
   });
   assert.equal(revoked.status, 200);
@@ -245,7 +243,7 @@ test("message deletion enforces ownership, applies all frontend filters, and cas
   assert.equal(absent.status, 404);
 });
 
-test("table routes reject unsafe queries, invalid paging, and unknown projects or tables as JSON", async (t) => {
+test("table routes reject unsafe queries, invalid paging, legacy paths, and unknown tables as JSON", async (t) => {
   const api = await fixture(t);
   const invalidRequests = [
     `${api.table("messages")}?select=*`,
@@ -255,8 +253,8 @@ test("table routes reject unsafe queries, invalid paging, and unknown projects o
     `${api.table("messages")}?order=body.asc;drop%20table%20users`,
     `${api.table("messages")}?limit=101`,
     `${api.table("messages")}?offset=-1`,
-    `${basePath}/tables/unknown`,
-    `/bff/data/wrong-project/tables/messages`,
+    "/tables/unknown",
+    "/bff/data/legacy/tables/messages",
   ];
   for (const path of invalidRequests) {
     const response = await api.request(path, { headers: { apikey: apiKey } });

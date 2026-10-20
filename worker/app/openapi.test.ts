@@ -44,20 +44,20 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     .map((route) => `${route.method} ${route.path.replace(/:([A-Za-z_]\w*)/g, "{$1}")}`))].sort();
   assert.deepEqual(documented, registered);
   assert.deepEqual(documented, [
-    "DELETE /bff/data/{projectId}/auth/session",
-    "DELETE /bff/data/{projectId}/tables/messages",
-    "GET /bff/data/{projectId}/auth/session",
-    "GET /bff/data/{projectId}/tables/boards",
-    "GET /bff/data/{projectId}/tables/messages",
-    "GET /bff/data/{projectId}/tables/replies",
-    "GET /bff/data/{projectId}/tables/users",
+    "DELETE /auth/session",
+    "DELETE /tables/messages",
+    "GET /auth/session",
     "GET /health", "GET /state",
-    "PATCH /bff/data/{projectId}/tables/users",
-    "POST /bff/data/{projectId}/auth/email",
-    "POST /bff/data/{projectId}/tables/boards",
-    "POST /bff/data/{projectId}/tables/messages",
-    "POST /bff/data/{projectId}/tables/replies",
-    "POST /bff/og-image",
+    "GET /tables/boards",
+    "GET /tables/messages",
+    "GET /tables/replies",
+    "GET /tables/users",
+    "PATCH /tables/users",
+    "POST /auth/email",
+    "POST /og-image",
+    "POST /tables/boards",
+    "POST /tables/messages",
+    "POST /tables/replies",
   ]);
   const ids = new Set<string>();
   for (const methods of Object.values(doc.paths)) {

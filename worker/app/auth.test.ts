@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { handleRequest } from "./router";
-import { PROJECT_ID } from "./contracts";
 import { createTestDatabase } from "../testing/database";
 
-const base = `https://api.yapern.com/bff/data/${PROJECT_ID}/auth`;
+const base = "https://api.yapern.com/auth";
 
 interface AuthResponse {
   token: string;

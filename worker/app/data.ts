@@ -1,7 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
 import { requireSession } from "./auth";
-import { ApiError, ProjectParams, protectedSecurity } from "./contracts";
+import { ApiError, protectedSecurity } from "./contracts";
 
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
@@ -121,15 +121,14 @@ function checkOwner(supplied: string | undefined, actual: string): void {
 export function registerDataRoutes(app: Api): void {
   for (const collection of collections) {
     registerRoute(app, {
-      method: "get", path: `/bff/data/{projectId}/tables/${collection.table}`,
+      method: "get", path: `/tables/${collection.table}`,
       operationId: `list${collection.tag}`, tags: [collection.tag],
       summary: `Read ${collection.table === "users" ? "public author profiles" : collection.table}`,
       description: "Supports allowlisted select fields, eq. filters, field.asc/field.desc ordering, and limit/offset pagination (maximum 100). Profiles expose only id and name. The legacy apikey header is accepted but grants no permissions.",
-      security: [], request: { params: ProjectParams, query: collection.query as z.ZodObject },
+      security: [], request: { query: collection.query as z.ZodObject },
       responses: {
         200: jsonResult(rows(collection.schema.partial()), "Matching records in the data array. A select projection may omit fields."),
         400: errorResult("Unsupported query, projection, filter, or sort field (invalid_request)."),
-        404: errorResult("Unknown Yapern project (not_found)."),
       },
     }, async c => {
       const query = collection.query.parse(queryValues(c.req.url)) as Record<string, string | undefined>;
@@ -151,9 +150,9 @@ export function registerDataRoutes(app: Api): void {
   }
 
   registerRoute(app, {
-    method: "post", path: "/bff/data/{projectId}/tables/boards", operationId: "createBoard",
+    method: "post", path: "/tables/boards", operationId: "createBoard",
     tags: ["Boards"], summary: "Create a board owned by the signed-in user", security: protectedSecurity,
-    request: { params: ProjectParams, body: { required: true, content: jsonContent(boardInput) } },
+    request: { body: { required: true, content: jsonContent(boardInput) } },
     responses: { ...writeErrors, 201: jsonResult(rows(Board), "Created board."), 409: errorResult("This slug is already in use (board_exists).") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
@@ -166,9 +165,9 @@ export function registerDataRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "post", path: "/bff/data/{projectId}/tables/messages", operationId: "createMessage",
+    method: "post", path: "/tables/messages", operationId: "createMessage",
     tags: ["Messages"], summary: "Post a message to a board", security: protectedSecurity,
-    request: { params: ProjectParams, body: { required: true, content: jsonContent(messageInput) } },
+    request: { body: { required: true, content: jsonContent(messageInput) } },
     responses: { ...writeErrors, 201: jsonResult(rows(Message), "Created message.") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
@@ -181,9 +180,9 @@ export function registerDataRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "post", path: "/bff/data/{projectId}/tables/replies", operationId: "createReply",
+    method: "post", path: "/tables/replies", operationId: "createReply",
     tags: ["Replies"], summary: "Reply to an original message", security: protectedSecurity,
-    request: { params: ProjectParams, body: { required: true, content: jsonContent(replyInput) } },
+    request: { body: { required: true, content: jsonContent(replyInput) } },
     responses: { ...writeErrors, 201: jsonResult(rows(Reply), "Created reply. Replies cannot target other replies.") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
@@ -196,9 +195,9 @@ export function registerDataRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "patch", path: "/bff/data/{projectId}/tables/users", operationId: "updateProfile",
+    method: "patch", path: "/tables/users", operationId: "updateProfile",
     tags: ["Profiles"], summary: "Update your display name", security: protectedSecurity,
-    request: { params: ProjectParams, query: profileFilter, body: { required: true, content: jsonContent(profileInput) } },
+    request: { query: profileFilter, body: { required: true, content: jsonContent(profileInput) } },
     responses: { ...writeErrors, 200: jsonResult(rows(Profile), "Updated public profile.") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
@@ -212,9 +211,9 @@ export function registerDataRoutes(app: Api): void {
   });
 
   registerRoute(app, {
-    method: "delete", path: "/bff/data/{projectId}/tables/messages", operationId: "deleteMessage",
+    method: "delete", path: "/tables/messages", operationId: "deleteMessage",
     tags: ["Messages"], summary: "Delete your message and its replies", security: protectedSecurity,
-    request: { params: ProjectParams, query: deleteQuery },
+    request: { query: deleteQuery },
     responses: {
       ...writeErrors,
       200: jsonResult(z.object({ data: z.array(z.object({})).length(0), meta: z.object({ changes: z.literal(1) }) }), "Exactly one message was deleted; replies cascade automatically."),
