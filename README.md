@@ -44,7 +44,7 @@ and accepts the frontend's additional board and author filters. Creation returns
 session. Open Graph and Twitter images return immediately with HTTP 200 and
 `{ image, source, status: "ready" }`. When neither image is available, a
 Cloudflare Queue job renders a 1200×630 JPEG with Browser Run and stores it in
-the existing R2 bucket under `products/yapern/previews/`.
+the existing R2 bucket under `previews/`.
 
 Queued responses use HTTP 202 and include `{ image, source, status: "pending",
 previewId, statusUrl }` plus `Retry-After: 3`. The initial image is a validated

@@ -244,7 +244,7 @@ test("a superseded lease cannot publish or delete a newer renderer object", asyn
   const oldLease = (f.store.sqlite.prepare("SELECT lease FROM link_previews WHERE id=?").get(id) as { lease: string }).lease;
   const newerLease = "newer-render-lease";
   f.store.sqlite.prepare("UPDATE link_previews SET lease=?,lease_until=? WHERE id=?").run(newerLease, Date.now() + PREVIEW_LIMITS.leaseMs, id);
-  const newerKey = `products/yapern/previews/${id}/${newerLease}.jpg`;
+  const newerKey = `previews/${id}/${newerLease}.jpg`;
   await f.bucket.put(newerKey, jpeg);
   release(); await oldWork;
   assert.equal(f.store.sqlite.prepare("SELECT object_key FROM link_previews WHERE id=?").get(id)?.object_key, null);
@@ -271,13 +271,13 @@ test("cleanup removes expired and orphaned previews, including unacknowledged up
     .run(id, userId, `hash-${id}`, `https://example.com/${id}`, expires, Date.now());
   insert("expired", "user-1", Date.now() - 1);
   insert("orphan", "deleted-user", Date.now() + 1_000_000);
-  await f.bucket.put("products/yapern/previews/expired/a.jpg", jpeg);
-  await f.bucket.put("products/yapern/previews/expired/b.jpg", jpeg);
-  await f.bucket.put("products/yapern/previews/orphan/unacked.jpg", jpeg);
+  await f.bucket.put("previews/expired/a.jpg", jpeg);
+  await f.bucket.put("previews/expired/b.jpg", jpeg);
+  await f.bucket.put("previews/orphan/unacked.jpg", jpeg);
   await cleanupPreviews(f.env);
   assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) AS n FROM link_previews").get()?.n, 0);
   assert.equal(f.bucket.objects.size, 0, JSON.stringify({ keys: [...f.bucket.objects.keys()], deleted: f.bucket.deleted }));
-  assert.ok(f.bucket.deleted.flat().includes("products/yapern/previews/orphan/unacked.jpg"));
+  assert.ok(f.bucket.deleted.flat().includes("previews/orphan/unacked.jpg"));
 });
 
 test("invalid queue messages and obsolete deliveries are acknowledged", async t => {

@@ -14,7 +14,7 @@ type PreviewRow = {
   error: string | null; lease: string | null; lease_until: number; expires_at: number; created_at: number;
 };
 
-const objectPrefix = (id: string) => `products/yapern/previews/${id}/`;
+const objectPrefix = (id: string) => `previews/${id}/`;
 
 function result(row: PreviewRow, origin: string) {
   const ready = row.state === "ready";
