@@ -4,6 +4,7 @@ import { requireSession } from "./auth";
 import { ApiError, protectedSecurity } from "./contracts";
 import { deleteBoardLogo, storeBoardLogo } from "./board-logos";
 import { deleteBoardImage, storeBoardImage } from "./board-images";
+import { notifyReply, publishNotifications } from "./notifications";
 
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
@@ -300,8 +301,9 @@ export function registerDataRoutes(app: Api): void {
     const input = replyInput.parse(await c.req.json());
     checkOwner(input.user_id, session.user_id);
     const result = await c.env.DB.prepare("INSERT INTO replies(message_id,user_id,body) SELECT id,?,? FROM messages WHERE id=? RETURNING *")
-      .bind(session.user_id, input.body, input.message_id).first();
+      .bind(session.user_id, input.body, input.message_id).first<{ id: string }>();
     if (!result) throw new ApiError(404, "not_found");
+    await notifyReply(c.env, result.id);
     return c.json({ data: [result] }, 201);
   });
 
@@ -344,6 +346,7 @@ export function registerDataRoutes(app: Api): void {
       .bind(id, session.user_id, existing.board_id).first<{ id: string }>();
     if (!result) throw new ApiError(404, "not_found");
     await deleteBoardImage(c.env, existing.image_url, "board-messages");
+    await publishNotifications(c.env, existing.user_id);
     return c.json({ data: [], meta: { changes: 1 } });
   });
 }

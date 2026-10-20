@@ -9,6 +9,12 @@
   },
   "vars": {
   },
+  "durable_objects": {
+    "bindings": [{ "name": "NOTIFICATIONS", "class_name": "UserNotifications" }]
+  },
+  "migrations": [
+    { "tag": "v1-notifications", "new_sqlite_classes": ["UserNotifications"] }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

@@ -30,6 +30,10 @@ API routes:
 | DELETE | `/tables/messages` | Delete your message and its replies |
 | GET | `/tables/replies` | Read replies |
 | POST | `/tables/replies` | Reply to an original message |
+| GET | `/notifications` | Read your latest 50 reply notifications and total unread count |
+| POST | `/notifications/read` | Mark notifications through an observed ID as read |
+| POST | `/notifications/ticket` | Create a single-use WebSocket ticket valid for 60 seconds |
+| GET | `/notifications/socket` | Upgrade to a WebSocket using `user_id` and `ticket` query parameters |
 | GET | `/tables/users` | Read public author IDs and display names |
 | PATCH | `/tables/users` | Update your display name |
 | POST | `/og-image` | Read link metadata or queue a screenshot |
@@ -61,6 +65,33 @@ and records its path in `image_url` for cleanup when the message is deleted.
 The combined body, including the image URL, must fit within 2000 characters.
 Failed message creation removes the uploaded object. Apply
 `009_message_images.sql` before deploying the API, then deploy the web app.
+
+Reply notifications use one SQLite-backed `UserNotifications` Durable Object per
+recipient, with Cloudflare's [WebSocket Hibernation API](https://developers.cloudflare.com/durable-objects/examples/websocket-hibernation-server/).
+The `NOTIFICATIONS` binding and `v1-notifications` Durable Object migration are
+configured in `wrangler.jsonc`. Apply `010_reply_notifications.sql` before
+deploying the API, then deploy the web app. `npm run deploy` applies D1 migrations
+and deploys the Worker with its Durable Object migration.
+
+A D1 trigger creates an unread notification in the same transaction as each
+reply, excluding replies to your own messages. D1 retains unread state while
+all tabs are closed; opening a socket sends the current persisted snapshot.
+Successful writes push snapshots to all connected recipient tabs. The existing
+five-minute cron retries failed deliveries using the durable notification
+outbox. Deleting a message cascades its notifications and refreshes its author's
+connected tabs. The inbox keeps read notifications and returns the latest 50.
+
+`POST /notifications/read` accepts `{ "through_id": <last_id from a snapshot> }`.
+It acknowledges only notifications through that ID, preserving later replies,
+and broadcasts the updated count across tabs. Every snapshot carries a monotonic
+per-user `version` so clients can discard delayed responses.
+
+HTTP notification routes require the existing bearer session. Browsers exchange
+it for an expiring, single-use socket ticket; bearer tokens never go in URLs.
+Socket upgrades require an allowed Origin, and ticket consumption rechecks the
+session. Each push rechecks attached session hashes and closes revoked or
+expired sessions. The runtime answers `ping` with `pong` without waking a
+hibernating object; clients reconnect with bounded backoff after disconnection.
 
 `POST /og-image` accepts `{ "url": "https://example.com" }` with a bearer
 session. Open Graph and Twitter images return immediately with HTTP 200 and

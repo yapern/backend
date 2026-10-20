@@ -50,6 +50,8 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /board-logos/{filename}",
     "GET /board-messages/{filename}",
     "GET /health",
+    "GET /notifications",
+    "GET /notifications/socket",
     "GET /preview-images/{filename}",
     "GET /previews/{id}",
     "GET /state",
@@ -63,6 +65,8 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "PATCH /tables/boards",
     "PATCH /tables/users",
     "POST /auth/email",
+    "POST /notifications/read",
+    "POST /notifications/ticket",
     "POST /og-image",
     "POST /tables/boards",
     "POST /tables/messages",
@@ -76,10 +80,13 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
       assert.ok(!ids.has(operation.operationId), `Duplicate operationId: ${operation.operationId}`);
       ids.add(operation.operationId);
       const success = operation.responses["200"] ?? operation.responses["201"];
-      assert.ok(Object.values(success.content).some(content => content.schema));
+      if (operation.responses["101"]) assert.ok(operation.responses["101"].description);
+      else assert.ok(Object.values(success.content).some(content => content.schema));
       for (const response of Object.values(operation.responses)) assert.ok(response.description);
       assert.ok(Array.isArray(operation.security));
-      for (const security of operation.security) assert.deepEqual(security, { bearerAuth: [] });
+      if (operation.security.length) {
+        for (const security of operation.security) assert.deepEqual(security, { bearerAuth: [] });
+      }
     }
   }
   function checkReferences(value: unknown): void {
@@ -102,11 +109,11 @@ test("OpenAPI contains only current schemas and tags", async () => {
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
     "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile",
+    "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
-    { name: "Messages" }, { name: "Replies" }, { name: "Previews" },
+    { name: "Messages" }, { name: "Replies" }, { name: "Previews" }, { name: "Notifications" },
   ]);
 });
 
@@ -129,11 +136,39 @@ test("OpenAPI marks every write and session operation as authenticated", async (
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
       const requiresSession = path.startsWith("/previews/") ||
+        (path === "/notifications" || path === "/notifications/read" || path === "/notifications/ticket") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
           !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/"));
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }
+});
+
+test("notification OpenAPI documents session-protected HTTP routes and ticket-authenticated socket upgrade", async () => {
+  const doc = await document();
+  const notifications = doc.paths["/notifications"]?.get;
+  const acknowledgement = doc.paths["/notifications/read"]?.post;
+  const ticket = doc.paths["/notifications/ticket"]?.post;
+  const socket = doc.paths["/notifications/socket"]?.get;
+  assert.deepEqual(notifications?.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(acknowledgement?.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(ticket?.security, [{ bearerAuth: [] }]);
+  assert.deepEqual(socket?.security, []);
+  assert.ok(notifications?.responses["200"]);
+  assert.ok(acknowledgement?.responses["200"]);
+  assert.ok(ticket?.responses["200"]);
+  assert.ok(socket?.responses["101"]);
+  assert.ok(socket?.responses["401"]);
+  assert.ok(socket?.responses["403"]);
+  assert.equal((socket as unknown as { description?: string }).description?.includes("revoked sessions"), true);
+  const snapshot = doc.components.schemas.NotificationSnapshot as {
+    properties?: Record<string, { type?: string; properties?: Record<string, unknown> }>;
+  };
+  assert.equal(snapshot.properties?.type?.type, "string");
+  assert.ok(snapshot.properties?.version);
+  assert.ok(snapshot.properties?.unread_count);
+  assert.ok(snapshot.properties?.last_id);
+  assert.ok(snapshot.properties?.notifications);
 });
 
 test("docs is public HTML pointing at the generated document", async () => {

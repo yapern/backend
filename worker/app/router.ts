@@ -10,6 +10,7 @@ import { ApiError } from "./contracts";
 import { registerDataRoutes } from "./data";
 import { registerPreviewRoutes } from "./previews";
 import { MAX_IMAGE_BYTES, registerBoardImageRoutes } from "./board-images";
+import { registerNotificationRoutes } from "./notifications";
 
 export const app = new OpenAPIHono<ApiEnv>({
   defaultHook: (result, c) => {
@@ -31,7 +32,7 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image", "/previews/*"]) {
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image", "/previews/*", "/notifications", "/notifications/*"]) {
   app.use(path, cors({
     origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -61,6 +62,7 @@ registerAuthRoutes(app);
 registerDataRoutes(app);
 registerBoardImageRoutes(app);
 registerPreviewRoutes(app);
+registerNotificationRoutes(app);
 
 registerRoute(app, {
   method: "get", path: "/health", operationId: "getHealth",
@@ -96,7 +98,7 @@ app.doc31("/openapi.json", {
   tags: [
     { name: "System" },
     { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
-    { name: "Messages" }, { name: "Replies" }, { name: "Previews" },
+    { name: "Messages" }, { name: "Replies" }, { name: "Previews" }, { name: "Notifications" },
   ],
 });
 
