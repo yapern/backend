@@ -2,8 +2,6 @@ import { OpenAPIHono, z } from "@hono/zod-openapi";
 import { swaggerUI } from "@hono/swagger-ui";
 import { jsonResponse } from "../shared/http";
 import { errorResult, jsonResult, OkSchema, registerRoute, type ApiEnv } from "../shared/openapi";
-import { authApp } from "./auth";
-import { adminApp } from "./admin";
 
 export const app = new OpenAPIHono<ApiEnv>();
 
@@ -11,18 +9,6 @@ app.use("*", async (c, next) => {
   c.header("cache-control", "no-store");
   await next();
 });
-
-app.openAPIRegistry.registerComponent("securitySchemes", "CookieSession", {
-  type: "apiKey", in: "cookie", name: "groupicorn_session",
-  description: "Browser session issued by /auth/google or /auth/email. Browsers send the HttpOnly cookie automatically; Swagger UI cannot set Cookie headers manually.",
-});
-app.openAPIRegistry.registerComponent("securitySchemes", "NativeBearer", {
-  type: "http", scheme: "bearer",
-  description: "64-character lowercase hexadecimal access token issued by a native app login. Expires after 15 minutes.",
-});
-
-app.route("/", authApp);
-app.route("/", adminApp);
 
 registerRoute(app, {
   method: "get", path: "/health", operationId: "getHealth",
@@ -52,22 +38,19 @@ app.doc31("/openapi.json", {
   info: {
     title: "Yapern API",
     version: "1.0.0",
-    description: "Browser and native authentication, read-only administration, and system endpoints. Auth and admin routes accept OPTIONS preflight requests. Disallowed origins receive 403; unknown routes return 404. Auth routes with unsupported methods return 404; admin and state routes return 405. Responses are not cached.",
+    description: "System endpoints for the Yapern backend. Responses are not cached.",
   },
   servers: [{ url: "/", description: "Current environment" }],
   tags: [
     { name: "System" },
-    { name: "Browser authentication" },
-    { name: "Native authentication" },
-    { name: "Administration" },
   ],
 });
 
 app.get("/docs", swaggerUI({
   url: "/openapi.json", title: "Yapern API documentation",
   version: "5.34.0",
-  docExpansion: "list", deepLinking: true, withCredentials: true,
-  supportedSubmitMethods: ["get", "post", "delete"], validatorUrl: "",
+  docExpansion: "list", deepLinking: true,
+  supportedSubmitMethods: ["get"], validatorUrl: "",
 }));
 app.get("/docs/", (c) => c.redirect("/docs", 308));
 

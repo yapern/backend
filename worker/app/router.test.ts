@@ -2,119 +2,75 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { handleRequest } from "./router";
 
+const origin = "https://api.yapern.com";
+
 test("health returns an OK JSON response", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/health"),
-    {} as Env,
-  );
+  const response = await handleRequest(new Request(`${origin}/health`), {} as Env);
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
 });
 
 test("unknown routes return not found", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/unknown"),
-    {} as Env,
-  );
+  const response = await handleRequest(new Request(`${origin}/unknown`), {} as Env);
 
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { error: "not_found" });
 });
 
 test("state rejects non-GET requests", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/state", { method: "POST" }),
-    {} as Env,
-  );
+  for (const method of ["HEAD", "POST", "DELETE"]) {
+    const response = await handleRequest(new Request(`${origin}/state`, { method }), {} as Env);
 
-  assert.equal(response.status, 405);
-  assert.equal(response.headers.get("allow"), "GET");
+    assert.equal(response.status, 405, method);
+    assert.equal(response.headers.get("allow"), "GET", method);
+  }
+});
+
+test("state reports an unavailable Durable Object binding", async () => {
+  const response = await handleRequest(new Request(`${origin}/state`), {} as Env);
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "durable_object_unavailable" });
 });
 
 test("retired routes return not found", async (t) => {
   const retiredRoutes = [
-    ["IOP", "/iop/tracked-programs"],
-    ["directory", "/directory/locations"],
-    ["map tiles", "/map/tiles/1/2/3"],
-    ["reviews", "/reviews"],
-    ["tour requests", "/tour-requests"],
-    ["directory herd", "/directory/locations/example/herd"],
-    ["herds", "/herds"],
-    ["Apple IAP notifications", "/iap/apple/notifications"],
+    ["GET", "/iop/tracked-programs"],
+    ["GET", "/directory/locations"],
+    ["GET", "/map/tiles/1/2/3"],
+    ["GET", "/reviews"],
+    ["GET", "/tour-requests"],
+    ["GET", "/directory/locations/example/herd"],
+    ["GET", "/herds"],
+    ["POST", "/iap/apple/notifications"],
+    ["POST", "/auth/google"],
+    ["POST", "/auth/email"],
+    ["GET", "/auth/me"],
+    ["POST", "/auth/logout"],
+    ["POST", "/auth/app/anonymous"],
+    ["POST", "/auth/app/google"],
+    ["POST", "/auth/app/email"],
+    ["POST", "/auth/app/apple"],
+    ["GET", "/auth/app/me"],
+    ["DELETE", "/auth/app/me"],
+    ["POST", "/auth/app/refresh"],
+    ["POST", "/auth/app/logout"],
+    ["POST", "/auth/app/legacy-exchange"],
+    ["GET", "/admin/tables"],
+    ["GET", "/admin/tables/herds"],
+    ["OPTIONS", "/auth/google"],
+    ["OPTIONS", "/admin/tables"],
   ] as const;
 
-  for (const [name, path] of retiredRoutes) {
-    await t.test(name, async () => {
-      const response = await handleRequest(
-        new Request(`https://api.groupicorn.com${path}`),
-        {} as Env,
-      );
+  for (const [method, path] of retiredRoutes) {
+    await t.test(`${method} ${path}`, async () => {
+      const response = await handleRequest(new Request(`${origin}${path}`, { method }), {} as Env);
 
       assert.equal(response.status, 404);
       assert.deepEqual(await response.json(), { error: "not_found" });
+      assert.equal(response.headers.get("set-cookie"), null);
+      assert.equal(response.headers.get("access-control-allow-credentials"), null);
     });
   }
-});
-
-test("legacy app exchange returns not found", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/auth/app/legacy-exchange", {
-      method: "POST",
-    }),
-    {} as Env,
-  );
-
-  assert.equal(response.status, 404);
-  assert.deepEqual(await response.json(), { error: "not_found" });
-});
-
-test("auth preflight allows the web origin", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/auth/google", {
-      method: "OPTIONS",
-      headers: { Origin: "http://localhost:5173" },
-    }),
-    {} as Env,
-  );
-
-  assert.equal(response.status, 204);
-  assert.equal(response.headers.get("access-control-allow-origin"), "http://localhost:5173");
-  assert.equal(response.headers.get("access-control-allow-credentials"), "true");
-});
-
-test("auth rejects an unknown origin", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/auth/me", {
-      headers: { Origin: "https://example.com" },
-    }),
-    {} as Env,
-  );
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(await response.json(), { error: "origin_not_allowed" });
-});
-
-test("auth me returns an empty session without a cookie", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/auth/me"),
-    {} as Env,
-  );
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { user: null });
-});
-
-test("email auth rejects invalid credentials before touching the database", async () => {
-  const response = await handleRequest(
-    new Request("https://api.groupicorn.com/auth/email", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: "wrong@example.com", password: "wrong" }),
-    }),
-    {} as Env,
-  );
-
-  assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { error: "invalid_credentials" });
 });

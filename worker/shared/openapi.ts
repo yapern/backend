@@ -24,9 +24,5 @@ export function registerRoute(app: Api, definition: RouteConfig, handler: Handle
     ...definition,
     responses: { 500: errorResult("Unexpected server error."), ...definition.responses },
   });
-  // Handlers validate with the shared Zod schemas after their authentication and
-  // availability checks. Automatic pre-handler validation would change those
-  // checks' ordering and the API's existing provider-specific error responses.
-  app.openAPIRegistry.registerPath(route);
-  app.on(route.method, route.getRoutingPath(), handler);
+  app.openapi(route, handler);
 }
