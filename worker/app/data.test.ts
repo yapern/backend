@@ -110,6 +110,46 @@ test("public table reads support the frontend's filters, columns, ordering, and 
   assert.notEqual(second.id, first.id);
 });
 
+test("board creators can update only the description while keeping the board's identity and name", async t => {
+  const api = await fixture(t);
+  const owner = await api.signIn("board-owner@example.com");
+  const other = await api.signIn("board-other@example.com");
+  const created = await api.request(api.table("boards"), {
+    method: "POST", headers: api.authorized(owner, { "content-type": "application/json" }),
+    body: JSON.stringify({ slug: "my-board", name: "My Board", description: "Original" }),
+  });
+  const board = (await json(created)).data[0];
+  const patch = (query: string, input: unknown, session?: UserSession) => api.request(`${api.table("boards")}${query}`, {
+    method: "PATCH", headers: session ? api.authorized(session, { "content-type": "application/json" }) : { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const query = `?id=eq.${board.id}&user_id=eq.${owner.user.id}`;
+  for (const description of ["  Updated description.  ", ""]) {
+    const updated = await patch(query, { description }, owner);
+    assert.equal(updated.status, 200, await updated.clone().text());
+    assert.deepEqual((await json(updated)).data, [{ ...board, description: description.trim() }]);
+  }
+  assert.equal((await patch(query, { description: "Stolen" })).status, 401);
+  assert.equal((await patch(`?id=eq.${board.id}`, { description: "Stolen" }, other)).status, 403);
+  assert.equal((await patch(query, { description: "Stolen" }, other)).status, 403);
+  assert.equal((await patch("?id=eq.general", { description: "Stolen" }, owner)).status, 403);
+  assert.equal((await patch("?id=eq.missing", { description: "Missing" }, owner)).status, 404);
+  for (const input of [
+    {}, { description: null }, { description: 123 }, { description: "a".repeat(2001) },
+    { description: "Changed", name: "New Name" }, { description: "Changed", slug: "new-slug" },
+    { description: "Changed", user_id: other.user.id }, { description: "Changed", id: "other" },
+  ]) {
+    assert.equal((await patch(query, input, owner)).status, 400);
+  }
+  for (const invalidQuery of ["", "?id=eq.", `${query}&id=eq.general`, `${query}&slug=eq.general`]) {
+    assert.equal((await patch(invalidQuery, { description: "Changed" }, owner)).status, 400);
+  }
+  const read = await api.request(`${api.table("boards")}?id=eq.${board.id}`);
+  assert.deepEqual((await json(read)).data, [{ ...board, description: "" }]);
+  await api.request("/auth/session", { method: "DELETE", headers: api.authorized(owner) });
+  assert.equal((await patch(query, { description: "Revoked" }, owner)).status, 401);
+});
+
 test("profile reads expose only id and name, and a user can update only their own name", async (t) => {
   const api = await fixture(t);
   const owner = await api.signIn("private@example.com");

@@ -56,6 +56,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/replies",
     "GET /tables/users",
     "HEAD /preview-images/{filename}",
+    "PATCH /tables/boards",
     "PATCH /tables/users",
     "POST /auth/email",
     "POST /og-image",
@@ -97,7 +98,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
     "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateProfile",
+    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateProfile",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },

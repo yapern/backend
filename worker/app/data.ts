@@ -43,6 +43,8 @@ const messageInput = z.object({
 }).strict().openapi("CreateMessage");
 const replyInput = z.object({ ...ownerInput, message_id: identifier, body }).strict().openapi("CreateReply");
 const profileInput = z.object({ name }).strict().openapi("UpdateProfile");
+const boardUpdateInput = z.object({ description: z.string().trim().max(2000) }).strict().openapi("UpdateBoardDescription");
+const boardUpdateQuery = z.object({ id: filter, user_id: filter.optional() }).strict();
 const profileFilter = z.object({ id: filter }).strict();
 const deleteQuery = z.object({ id: filter, board_id: filter.optional(), user_id: filter.optional() }).strict();
 
@@ -162,6 +164,27 @@ export function registerDataRoutes(app: Api): void {
       .bind(input.slug, input.name, input.description, session.user_id).first();
     if (!result) throw new ApiError(409, "board_exists");
     return c.json({ data: [result] }, 201);
+  });
+
+  registerRoute(app, {
+    method: "patch", path: "/tables/boards", operationId: "updateBoardDescription",
+    tags: ["Boards"], summary: "Update the description of a board you created", security: protectedSecurity,
+    request: { query: boardUpdateQuery, body: { required: true, content: jsonContent(boardUpdateInput) } },
+    responses: { ...writeErrors, 200: jsonResult(rows(Board), "Updated board. Its name, slug, and creator are unchanged.") },
+  }, async c => {
+    const session = await requireSession(c.req.raw, c.env);
+    const query = boardUpdateQuery.parse(queryValues(c.req.url));
+    const input = boardUpdateInput.parse(await c.req.json());
+    if (query.user_id !== undefined) checkOwner(equality(query.user_id), session.user_id);
+    const id = equality(query.id);
+    const existing = await c.env.DB.prepare("SELECT user_id FROM boards WHERE id=?")
+      .bind(id).first<{ user_id: string | null }>();
+    if (!existing) throw new ApiError(404, "not_found");
+    if (existing.user_id !== session.user_id) throw new ApiError(403, "permission_denied");
+    const result = await c.env.DB.prepare("UPDATE boards SET description=? WHERE id=? AND user_id=? RETURNING *")
+      .bind(input.description, id, session.user_id).first();
+    if (!result) throw new ApiError(404, "not_found");
+    return c.json({ data: [result] });
   });
 
   registerRoute(app, {

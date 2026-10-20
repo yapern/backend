@@ -22,6 +22,7 @@ API routes:
 | DELETE | `/auth/session` | Revoke this session |
 | GET | `/tables/boards` | Read boards |
 | POST | `/tables/boards` | Create a board |
+| PATCH | `/tables/boards` | Update only the description of a board you created |
 | GET | `/tables/messages` | Read messages |
 | POST | `/tables/messages` | Create a titled message |
 | DELETE | `/tables/messages` | Delete your message and its replies |
