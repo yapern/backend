@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { extractMetadata, isPublicAddress, lookupPreview, safePublicUrl, type DnsResolver } from "./preview-metadata";
+import { extractMetadata, isPublicAddress, lookupPreview, PREVIEW_USER_AGENT, safePublicUrl, type DnsResolver } from "./preview-metadata";
 import { handleRequest } from "./router";
 import { createTestDatabase } from "../testing/database";
 
@@ -54,8 +54,10 @@ test("DNS address checks reject private and reserved A and AAAA records", () => 
 
 test("lookup returns Open Graph metadata from the final safe redirect target", async () => {
   const requested: string[] = [];
+  const userAgents: Array<string | null> = [];
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     requested.push(String(input));
+    userAgents.push(new Headers(init?.headers).get("user-agent"));
     assert.equal(init?.redirect, "manual");
     assert.equal(init?.headers && new Headers(init.headers).get("authorization"), null);
     if (requested.length === 1) return new Response(null, { status: 302, headers: { location: "/new" } });
@@ -65,6 +67,7 @@ test("lookup returns Open Graph metadata from the final safe redirect target", a
     image: "https://example.com/cover.jpg", source: "og", status: "ready",
   });
   assert.deepEqual(requested, ["https://example.com/old", "https://example.com/new"]);
+  assert.deepEqual(userAgents, [PREVIEW_USER_AGENT, PREVIEW_USER_AGENT]);
 });
 
 test("lookup refuses a redirect to a private address", async () => {
@@ -125,8 +128,10 @@ test("Twitter image follows invalid Open Graph URL and favicon is probed only as
 
 test("favicon fallback requires an image content type", async () => {
   const calls: string[] = [];
-  const fetcher = (async (input: RequestInfo | URL) => {
+  const userAgents: Array<string | null> = [];
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push(String(input));
+    userAgents.push(new Headers(init?.headers).get("user-agent"));
     if (calls.length === 1) return htmlResponse('<link rel="icon" href="/site.ico">');
     if (calls.length === 2) return new Response("icon", { headers: { "content-type": "image/x-icon" } });
     throw new Error("unexpected fetch");
@@ -136,6 +141,7 @@ test("favicon fallback requires an image content type", async () => {
     diagnostics: { metadata: { code: "preview_metadata_missing", message: "No usable Open Graph or Twitter image was found in the first 256 KiB of page HTML.", httpStatus: 200, contentType: "text/html; charset=utf-8" } },
   });
   assert.deepEqual(calls, ["https://example.com/article", "https://example.com/site.ico"]);
+  assert.deepEqual(userAgents, [PREVIEW_USER_AGENT, PREVIEW_USER_AGENT]);
 });
 
 test("metadata fallbacks distinguish HTTP, content type, empty HTML, missing tags, and transport failures", async () => {
@@ -164,6 +170,30 @@ test("DNS lookup with no records is distinct from a private address", async () =
   const noRecords: DnsResolver = { resolve4: async () => { throw new Error("ENODATA"); }, resolve6: async () => { throw new Error("ENODATA"); } };
   const result = await lookupPreview("https://example.com", async () => htmlResponse("<body>ok</body>"), noRecords);
   assert.equal(result.diagnostics?.metadata?.code, "preview_dns_failed");
+});
+
+test("DNS ignores CNAME answers but validates every returned IP address", async () => {
+  const alias = "a026d147d2544f20.vercel-dns-017.com.";
+  const fetcher = async () => htmlResponse('<meta property="og:image" content="/cover.jpg">');
+  const mixedDns: DnsResolver = {
+    resolve4: async () => [alias, "216.150.1.1"],
+    resolve6: async () => [alias],
+  };
+  assert.equal((await lookupPreview("https://lobstack.ai", fetcher, mixedDns)).image, "https://lobstack.ai/cover.jpg");
+
+  const aliasesOnly: DnsResolver = { resolve4: async () => [alias], resolve6: async () => [alias] };
+  let fetches = 0;
+  const noAddress = await lookupPreview("https://lobstack.ai", async () => { fetches++; return htmlResponse(""); }, aliasesOnly);
+  assert.equal(noAddress.diagnostics?.metadata?.code, "preview_dns_failed");
+  assert.equal(fetches, 0);
+
+  for (const resolver of [
+    { resolve4: async () => [alias, "10.0.0.1"], resolve6: async () => ["2606:4700::1111"] },
+    { resolve4: async () => [alias, "216.150.1.1"], resolve6: async () => ["fd00::1"] },
+  ]) {
+    const privateAddress = await lookupPreview("https://lobstack.ai", fetcher, resolver);
+    assert.equal(privateAddress.diagnostics?.metadata?.code, "preview_dns_not_public");
+  }
 });
 
 test("preview route requires a session and validates URL and request fields before lookup", async t => {

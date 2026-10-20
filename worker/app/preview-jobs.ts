@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { ApiError } from "./contracts";
-import { checkPublicDns, defaultResolver, lookupPreview, safePublicUrl, type DnsResolver } from "./preview-metadata";
+import { checkPublicDns, defaultResolver, lookupPreview, PREVIEW_USER_AGENT, safePublicUrl, type DnsResolver } from "./preview-metadata";
 import { failureDiagnostic, PreviewFailure, readPreviewDiagnostics, type PreviewDiagnostic } from "./preview-diagnostics";
 
 export const PREVIEW_LIMITS = {
@@ -35,6 +35,14 @@ function result(row: PreviewRow, origin: string) {
     },
     status: row.state === "ready" || row.state === "failed" ? 200 as const : 202 as const,
   };
+}
+
+function logCacheHit(row: PreviewRow): void {
+  const cached = result(row, "").data;
+  console.info("[link-preview]", "cache hit", {
+    previewId: row.id, state: row.state, diagnostics: cached.diagnostics, error: cached.error,
+    expiresAt: row.expires_at, remainingTtlMs: Math.max(0, row.expires_at - Date.now()),
+  });
 }
 
 async function dispatch(env: Env, id: string): Promise<void> {
@@ -84,6 +92,7 @@ export async function requestPreview(
   }
   if (row) {
     await recoverDispatch(env, row);
+    logCacheHit(row);
     return result(row, origin);
   }
   const metadata = await lookup(url.href);
@@ -117,6 +126,7 @@ export async function previewStatus(env: Env, userId: string, id: string, origin
     .bind(id, userId, Date.now()).first<PreviewRow>();
   if (!row) throw new ApiError(404, "not_found");
   await recoverDispatch(env, row);
+  logCacheHit(row);
   return result(row, origin);
 }
 
@@ -203,7 +213,7 @@ export async function renderScreenshot(env: Env, value: string, resolver: DnsRes
   let response: Response;
   try {
     const pending = env.BROWSER.quickAction("snapshot", {
-      url: value, formats: ["content", "screenshot"], viewport: { width: 1200, height: 630 },
+      url: value, userAgent: PREVIEW_USER_AGENT, formats: ["content", "screenshot"], viewport: { width: 1200, height: 630 },
       screenshotOptions: { type: "jpeg", quality: 80, fullPage: false },
       gotoOptions: { timeout: 10_000, waitUntil: "networkidle2" }, actionTimeout: 10_000, waitForTimeout: 1000,
       allowRequestPattern: [BROWSER_PUBLIC_PATTERN], rejectResourceTypes: ["media", "websocket"], cacheTTL: 0,

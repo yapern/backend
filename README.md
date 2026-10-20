@@ -64,6 +64,10 @@ screenshot code, including when the endpoint returns HTTP 200. The API does not
 return raw browser provider messages. Worker logs use the `[link-preview]`
 prefix and include the preview ID, target host, HTTP status, diagnostic,
 elapsed time, and internal error details for investigation.
+Cache reads also log the preview ID, state, diagnostics, error code, and expiry
+time. Metadata and screenshot requests use the same desktop Chrome user agent.
+DNS validation ignores CNAME names and checks every resolved IP address; it
+requires at least one IP and rejects private or reserved addresses.
 
 Jobs deduplicate normalized URLs per user. Screenshots expire after 14 days;
 failures are cached for six hours. Limits are 100 new screenshots per user per
@@ -73,10 +77,13 @@ removes expired jobs and R2 objects, including objects belonging to deleted
 accounts. Rendering rejects unsafe destinations, blank/error/challenge pages,
 oversized images, and requests exceeding the 25-second browser deadline.
 
-Apply migrations `005_link_previews.sql` and `006_preview_diagnostics.sql` in
-order before deploying this feature. Migration 006 adds stored diagnostics to
-preview jobs. Failures already cached for six hours before that migration have
-no recorded details and can only report their legacy error code. Wrangler
+Apply migrations `005_link_previews.sql`, `006_preview_diagnostics.sql`, and
+`007_expire_dns_preview_failures.sql` in order before deploying this feature.
+Migration 006 adds stored diagnostics to preview jobs. Migration 007 expires
+only cached `preview_dns_not_public` failures so those URLs retry DNS validation
+after the CNAME handling fix. Failures already cached for six hours before
+migration 006 have no recorded details and can only report their legacy error
+code. Wrangler
 binds the `yapern-previews` queue as `PREVIEW_QUEUE` and configures its consumer
 and cleanup cron. If it does not exist yet, create it with
 `npx wrangler queues create yapern-previews` before deploying. The browser

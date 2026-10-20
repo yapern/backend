@@ -4,7 +4,7 @@ import {
   BROWSER_PUBLIC_PATTERN, PREVIEW_LIMITS, cleanupPreviews, consumePreviews, previewImage,
   previewStatus, renderScreenshot, requestPreview, usablePreview,
 } from "./preview-jobs";
-import type { DnsResolver } from "./preview-metadata";
+import { PREVIEW_USER_AGENT, type DnsResolver } from "./preview-metadata";
 import { PreviewFailure } from "./preview-diagnostics";
 import { ApiError } from "./contracts";
 import { createTestDatabase } from "../testing/database";
@@ -189,6 +189,25 @@ test("cached screenshot bypasses metadata lookup and image GET/HEAD serve the R2
   assert.equal(await head.text(), "");
 });
 
+test("cached preview and status reads log state, diagnostics, error, and expiry", async t => {
+  const events: unknown[][] = [];
+  t.mock.method(console, "info", (...args: unknown[]) => { events.push(args); });
+  const f = await pending(t);
+  const id = previewId(f.requested);
+  await requestPreview(f.env, "user-1", "https://example.com/article", origin, async () => { throw Error("must stay cached"); });
+  await previewStatus(f.env, "user-1", id, origin);
+  const hits = events.filter(args => args[1] === "cache hit").map(args => args[2] as Record<string, unknown>);
+  assert.equal(hits.length, 2);
+  for (const hit of hits) {
+    assert.equal(hit.previewId, id);
+    assert.equal(hit.state, "pending");
+    assert.deepEqual(hit.diagnostics, f.requested.data.diagnostics);
+    assert.equal(hit.error, undefined);
+    assert.equal(typeof hit.expiresAt, "number");
+    assert.ok(Number(hit.remainingTtlMs) > 0);
+  }
+});
+
 test("worker failure is cached and falls back to metadata; queue loss is recoverable by redelivery or polling", async t => {
   const f = await pending(t);
   const id = previewId(f.requested);
@@ -326,10 +345,20 @@ test("browser renderer receives bounded snapshot settings and validates public D
   assert.equal(called, 1); assert.equal(action, "snapshot");
   assert.equal(opts.url, "https://example.com/path");
   assert.deepEqual(opts.formats, ["content", "screenshot"]);
+  assert.equal(opts.userAgent, PREVIEW_USER_AGENT);
   assert.deepEqual(opts.viewport, { width: 1200, height: 630 });
   assert.deepEqual(opts.screenshotOptions, { type: "jpeg", quality: 80, fullPage: false });
   assert.deepEqual(opts.rejectResourceTypes, ["media", "websocket"]);
   assert.deepEqual(opts.allowRequestPattern, [BROWSER_PUBLIC_PATTERN]);
+});
+
+test("browser renderer accepts CNAME answers when public IP answers are present", async () => {
+  const env = { BROWSER: { async quickAction() { return snapshotResponse(); } } } as unknown as Env;
+  const cnameDns: DnsResolver = {
+    resolve4: async () => ["a026d147d2544f20.vercel-dns-017.com.", "216.150.16.193"],
+    resolve6: async () => ["a026d147d2544f20.vercel-dns-017.com."],
+  };
+  assert.deepEqual([...await renderScreenshot(env, "https://www.lobstack.ai/", cnameDns)], [...jpeg]);
 });
 
 test("browser renderer blocks private initial, final, and redirect destinations", async () => {

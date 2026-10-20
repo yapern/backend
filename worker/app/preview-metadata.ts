@@ -7,6 +7,7 @@ const MAX_HTML_BYTES = 256 * 1024;
 const MAX_REDIRECTS = 3;
 const FETCH_TIMEOUT_MS = 8_000;
 const MAX_URL_LENGTH = 2_048;
+export const PREVIEW_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36";
 
 export type MetadataPreview = {
   image: string | null;
@@ -82,9 +83,18 @@ export async function checkPublicDns(hostname: string, resolver: DnsResolver, si
       Promise.allSettled([resolver.resolve4(hostname), resolver.resolve6(hostname)]),
       aborted,
     ]);
-    const addresses = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+    // Workerd's node:dns resolver includes CNAME targets alongside address
+    // records. Ignore those names and validate only actual IP answers.
+    const addresses = results.flatMap((result) => result.status === "fulfilled" ? result.value : [])
+      .filter((address) => isIP(address) !== 0);
     if (addresses.length === 0) throw new PreviewFailure("preview_dns_failed");
-    if (addresses.some((address) => !isPublicAddress(address))) throw new PreviewFailure("preview_dns_not_public");
+    const rejected = addresses.filter((address) => !isPublicAddress(address));
+    if (rejected.length) {
+      console.warn("[link-preview]", "DNS returned private or reserved addresses", {
+        hostname, addresses: rejected.slice(0, 8),
+      });
+      throw new PreviewFailure("preview_dns_not_public");
+    }
   } finally {
     if (abortListener) signal.removeEventListener("abort", abortListener);
   }
@@ -184,7 +194,7 @@ async function fetchWithSafeRedirects(
     const response = await fetcher(url.toString(), {
       method: "GET",
       redirect: "manual",
-      headers: { accept },
+      headers: { accept, "user-agent": PREVIEW_USER_AGENT },
       signal,
     });
     if (![301, 302, 303, 307, 308].includes(response.status)) return { response, url };
