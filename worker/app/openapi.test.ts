@@ -47,6 +47,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "DELETE /auth/session",
     "DELETE /tables/messages",
     "GET /auth/session",
+    "GET /board-logos/{filename}",
     "GET /health",
     "GET /preview-images/{filename}",
     "GET /previews/{id}",
@@ -55,6 +56,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/messages",
     "GET /tables/replies",
     "GET /tables/users",
+    "HEAD /board-logos/{filename}",
     "HEAD /preview-images/{filename}",
     "PATCH /tables/boards",
     "PATCH /tables/users",
@@ -98,7 +100,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
     "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateProfile",
+    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
@@ -125,7 +127,8 @@ test("OpenAPI marks every write and session operation as authenticated", async (
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
       const requiresSession = path.startsWith("/previews/") ||
-        ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") && !path.startsWith("/preview-images/"));
+        ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
+          !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/"));
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }

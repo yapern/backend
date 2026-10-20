@@ -9,6 +9,7 @@ import { registerAuthRoutes } from "./auth";
 import { ApiError } from "./contracts";
 import { registerDataRoutes } from "./data";
 import { registerPreviewRoutes } from "./previews";
+import { MAX_LOGO_BYTES, registerBoardLogoRoutes } from "./board-logos";
 
 export const app = new OpenAPIHono<ApiEnv>({
   defaultHook: (result, c) => {
@@ -43,10 +44,12 @@ for (const path of ["/auth/email", "/auth/session", "/tables/*", "/og-image", "/
     if (origin && !allowedOrigins(c.env).includes(origin)) throw new ApiError(403, "origin_not_allowed");
     await next();
   });
-  app.use(path, bodyLimit({
-    maxSize: 16 * 1024,
-    onError: c => c.json({ error: "request_too_large" }, 413),
-  }));
+  app.use(path, (c, next) => bodyLimit({
+    maxSize: c.req.method === "PATCH" && c.req.path === "/tables/boards" &&
+      c.req.header("content-type")?.toLowerCase().startsWith("multipart/form-data")
+      ? MAX_LOGO_BYTES + 16 * 1024 : 16 * 1024,
+    onError: context => context.json({ error: "request_too_large" }, 413),
+  })(c, next));
 }
 
 app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
@@ -55,6 +58,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
 });
 registerAuthRoutes(app);
 registerDataRoutes(app);
+registerBoardLogoRoutes(app);
 registerPreviewRoutes(app);
 
 registerRoute(app, {

@@ -22,7 +22,8 @@ API routes:
 | DELETE | `/auth/session` | Revoke this session |
 | GET | `/tables/boards` | Read boards |
 | POST | `/tables/boards` | Create a board |
-| PATCH | `/tables/boards` | Update only the description of a board you created |
+| PATCH | `/tables/boards` | Update the description and logo of a board you created |
+| GET / HEAD | `/board-logos/:filename` | Read a public board logo from R2 |
 | GET | `/tables/messages` | Read messages |
 | POST | `/tables/messages` | Create a titled message |
 | DELETE | `/tables/messages` | Delete your message and its replies |
@@ -40,6 +41,16 @@ Responses retain the frontend's `{ "data": [...] }` shape. Profile updates
 require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
+
+Board edits require `id=eq.<board-id>` and the board creator's bearer session.
+Send JSON `{ "description": "..." }` to edit the description, adding
+`"remove_logo": true` to remove the logo. For an upload or replacement, send
+`multipart/form-data` with a `description` field and a `logo` file. PNG, JPEG,
+WebP, and GIF files up to 5 MiB are accepted after signature and MIME checks.
+The file is stored in the existing `BUCKET` binding under `board-logos/`, and
+the nullable `logo_url` board field contains its public API path. Replacement
+and removal clean up the previous object after the board update succeeds.
+Apply `008_board_logos.sql` before deploying the API, then deploy the web app.
 
 `POST /og-image` accepts `{ "url": "https://example.com" }` with a bearer
 session. Open Graph and Twitter images return immediately with HTTP 200 and

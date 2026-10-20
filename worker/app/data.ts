@@ -2,6 +2,7 @@ import { z } from "@hono/zod-openapi";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
 import { requireSession } from "./auth";
 import { ApiError, protectedSecurity } from "./contracts";
+import { deleteBoardLogo, storeBoardLogo } from "./board-logos";
 
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
@@ -17,7 +18,7 @@ const pagination = {
 const Profile = z.object({ id: z.string(), name: z.string() }).openapi("PublicProfile");
 const Board = z.object({
   id: z.string(), slug: z.string(), name: z.string(), description: z.string(),
-  created_at: z.string(), user_id: z.string().nullable(),
+  created_at: z.string(), user_id: z.string().nullable(), logo_url: z.string().nullable(),
 }).openapi("Board");
 const Message = z.object({
   id: z.string(), board_id: z.string(), user_id: z.string(), title: z.string(),
@@ -43,7 +44,13 @@ const messageInput = z.object({
 }).strict().openapi("CreateMessage");
 const replyInput = z.object({ ...ownerInput, message_id: identifier, body }).strict().openapi("CreateReply");
 const profileInput = z.object({ name }).strict().openapi("UpdateProfile");
-const boardUpdateInput = z.object({ description: z.string().trim().max(2000) }).strict().openapi("UpdateBoardDescription");
+const boardUpdateInput = z.object({
+  description: z.string().trim().max(2000), remove_logo: z.boolean().optional(),
+}).strict().openapi("UpdateBoardDescription");
+const boardLogoInput = z.object({
+  description: z.string().trim().max(2000),
+  logo: z.instanceof(File).openapi({ type: "string", format: "binary" }),
+}).strict().openapi("UpdateBoardLogo");
 const boardUpdateQuery = z.object({ id: filter, user_id: filter.optional() }).strict();
 const profileFilter = z.object({ id: filter }).strict();
 const deleteQuery = z.object({ id: filter, board_id: filter.optional(), user_id: filter.optional() }).strict();
@@ -69,7 +76,7 @@ type Collection = {
 // Each resource defines its public fields explicitly. Client input never becomes
 // a table, column, operator, or SQL expression without an allowlist check.
 const collections: Collection[] = [
-  { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
+  { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id", "logo_url"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
   { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
   { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
   { table: "users", fields: ["id", "name"], filters: ["id"], query: profileQuery, schema: Profile, tag: "Profiles", order: "id.asc" },
@@ -168,19 +175,59 @@ export function registerDataRoutes(app: Api): void {
 
   registerRoute(app, {
     method: "patch", path: "/tables/boards", operationId: "updateBoardDescription",
-    tags: ["Boards"], summary: "Update the description of a board you created", security: protectedSecurity,
-    request: { query: boardUpdateQuery, body: { required: true, content: jsonContent(boardUpdateInput) } },
-    responses: { ...writeErrors, 200: jsonResult(rows(Board), "Updated board. Its name, slug, and creator are unchanged.") },
+    tags: ["Boards"], summary: "Update the description or logo of a board you created", security: protectedSecurity,
+    description: "Send JSON with description and optional remove_logo, or multipart/form-data with description and a logo file (PNG, JPEG, GIF, or WebP, at most 5 MiB). Replacements and removals delete the previous object from R2.",
+    // Hono treats required bodies as requiring every declared media type.
+    // Validate the selected format here and require its fields in the handler.
+    request: { query: boardUpdateQuery, body: { content: {
+      ...jsonContent(boardUpdateInput), "multipart/form-data": { schema: boardLogoInput },
+    } } },
+    responses: {
+      ...writeErrors, 200: jsonResult(rows(Board), "Updated board. Its name, slug, and creator are unchanged."),
+      409: errorResult("The logo changed during this request. Reload before saving again (board_changed)."),
+      413: errorResult("The logo exceeds 5 MiB (request_too_large)."),
+      415: errorResult("Unsupported file type or image signature (invalid_logo)."),
+      503: errorResult("Logo storage is unavailable (logo_storage_unavailable)."),
+    },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
     const query = boardUpdateQuery.parse(queryValues(c.req.url));
-    const input = boardUpdateInput.parse(await c.req.json());
     if (query.user_id !== undefined) checkOwner(equality(query.user_id), session.user_id);
     const id = equality(query.id);
-    const existing = await c.env.DB.prepare("SELECT user_id FROM boards WHERE id=?")
-      .bind(id).first<{ user_id: string | null }>();
+    const existing = await c.env.DB.prepare("SELECT user_id,logo_url FROM boards WHERE id=?")
+      .bind(id).first<{ user_id: string | null; logo_url: string | null }>();
     if (!existing) throw new ApiError(404, "not_found");
     if (existing.user_id !== session.user_id) throw new ApiError(403, "permission_denied");
+    const contentType = c.req.header("content-type")?.split(";")[0].trim().toLowerCase();
+    let input: z.infer<typeof boardUpdateInput>;
+    let file: File | undefined;
+    if (contentType === "multipart/form-data") {
+      const form = await c.req.formData();
+      if ([...form.keys()].some(key => !["description", "logo"].includes(key) || form.getAll(key).length !== 1)) {
+        throw new ApiError(400, "invalid_request");
+      }
+      const upload = boardLogoInput.parse(Object.fromEntries(form));
+      input = { description: upload.description };
+      file = upload.logo;
+    } else if (contentType === "application/json") {
+      input = boardUpdateInput.parse(await c.req.json());
+    } else {
+      throw new ApiError(415, "invalid_request");
+    }
+    if (file || input.remove_logo) {
+      const logoUrl = file ? await storeBoardLogo(c.env, file) : null;
+      let result;
+      try {
+        result = await c.env.DB.prepare("UPDATE boards SET description=?,logo_url=? WHERE id=? AND user_id=? AND logo_url IS ? RETURNING *")
+          .bind(input.description, logoUrl, id, session.user_id, existing.logo_url).first();
+        if (!result) throw new ApiError(409, "board_changed");
+      } catch (error) {
+        if (logoUrl) await deleteBoardLogo(c.env, logoUrl);
+        throw error;
+      }
+      await deleteBoardLogo(c.env, existing.logo_url);
+      return c.json({ data: [result] });
+    }
     const result = await c.env.DB.prepare("UPDATE boards SET description=? WHERE id=? AND user_id=? RETURNING *")
       .bind(input.description, id, session.user_id).first();
     if (!result) throw new ApiError(404, "not_found");
