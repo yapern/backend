@@ -48,6 +48,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "DELETE /tables/messages",
     "GET /auth/session",
     "GET /board-logos/{filename}",
+    "GET /board-messages/{filename}",
     "GET /health",
     "GET /preview-images/{filename}",
     "GET /previews/{id}",
@@ -57,6 +58,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/replies",
     "GET /tables/users",
     "HEAD /board-logos/{filename}",
+    "HEAD /board-messages/{filename}",
     "HEAD /preview-images/{filename}",
     "PATCH /tables/boards",
     "PATCH /tables/users",
@@ -98,7 +100,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
-    "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateReply",
+    "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
     "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile",
   ]);
@@ -128,7 +130,7 @@ test("OpenAPI marks every write and session operation as authenticated", async (
     for (const [method, operation] of Object.entries(methods)) {
       const requiresSession = path.startsWith("/previews/") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
-          !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/"));
+          !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/"));
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }

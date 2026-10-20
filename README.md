@@ -26,6 +26,7 @@ API routes:
 | GET / HEAD | `/board-logos/:filename` | Read a public board logo from R2 |
 | GET | `/tables/messages` | Read messages |
 | POST | `/tables/messages` | Create a titled message |
+| GET / HEAD | `/board-messages/:filename` | Read a public message image from R2 |
 | DELETE | `/tables/messages` | Delete your message and its replies |
 | GET | `/tables/replies` | Read replies |
 | POST | `/tables/replies` | Reply to an original message |
@@ -51,6 +52,15 @@ The file is stored in the existing `BUCKET` binding under `board-logos/`, and
 the nullable `logo_url` board field contains its public API path. Replacement
 and removal clean up the previous object after the board update succeeds.
 Apply `008_board_logos.sql` before deploying the API, then deploy the web app.
+
+Message creation also accepts `multipart/form-data` with `board_id`, `title`,
+an optional `body`, and an `image` file, using the same formats, signature checks,
+and 5 MiB limit as logos. Images go into the root `board-messages/` folder in
+the existing bucket. The API prepends the public image URL to the message body
+and records its path in `image_url` for cleanup when the message is deleted.
+The combined body, including the image URL, must fit within 2000 characters.
+Failed message creation removes the uploaded object. Apply
+`009_message_images.sql` before deploying the API, then deploy the web app.
 
 `POST /og-image` accepts `{ "url": "https://example.com" }` with a bearer
 session. Open Graph and Twitter images return immediately with HTTP 200 and

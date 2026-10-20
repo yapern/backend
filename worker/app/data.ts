@@ -3,10 +3,12 @@ import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from ".
 import { requireSession } from "./auth";
 import { ApiError, protectedSecurity } from "./contracts";
 import { deleteBoardLogo, storeBoardLogo } from "./board-logos";
+import { deleteBoardImage, storeBoardImage } from "./board-images";
 
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
 const body = z.string().trim().min(1).max(2000);
+const messageBody = z.string().overwrite(value => value.replace(/\r\n?/g, "\n").trim());
 const boardDescription = z.string().overwrite(value => value.replace(/\r\n?/g, "\n").trim()).max(2000);
 const filter = z.string().min(4).max(515).startsWith("eq.");
 const pagination = {
@@ -23,7 +25,7 @@ const Board = z.object({
 }).openapi("Board");
 const Message = z.object({
   id: z.string(), board_id: z.string(), user_id: z.string(), title: z.string(),
-  body: z.string(), created_at: z.string(),
+  body: z.string(), created_at: z.string(), image_url: z.string().nullable(),
 }).openapi("Message");
 const Reply = z.object({
   id: z.string(), message_id: z.string(), user_id: z.string(), body: z.string(), created_at: z.string(),
@@ -41,8 +43,12 @@ const boardInput = z.object({
   name, description: boardDescription.default(""),
 }).strict().openapi("CreateBoard");
 const messageInput = z.object({
-  ...ownerInput, board_id: identifier, title: z.string().trim().min(1).max(200), body,
+  ...ownerInput, board_id: identifier, title: z.string().trim().min(1).max(200), body: messageBody.min(1).max(2000),
 }).strict().openapi("CreateMessage");
+const messageImageInput = messageInput.extend({
+  body: messageBody.max(2000).default(""),
+  image: z.instanceof(File).openapi({ type: "string", format: "binary" }),
+}).openapi("CreateMessageImage");
 const replyInput = z.object({ ...ownerInput, message_id: identifier, body }).strict().openapi("CreateReply");
 const profileInput = z.object({ name }).strict().openapi("UpdateProfile");
 const boardUpdateInput = z.object({
@@ -78,7 +84,7 @@ type Collection = {
 // a table, column, operator, or SQL expression without an allowlist check.
 const collections: Collection[] = [
   { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id", "logo_url"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
-  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
+  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
   { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
   { table: "users", fields: ["id", "name"], filters: ["id"], query: profileQuery, schema: Profile, tag: "Profiles", order: "id.asc" },
 ];
@@ -238,16 +244,50 @@ export function registerDataRoutes(app: Api): void {
   registerRoute(app, {
     method: "post", path: "/tables/messages", operationId: "createMessage",
     tags: ["Messages"], summary: "Post a message to a board", security: protectedSecurity,
-    request: { body: { required: true, content: jsonContent(messageInput) } },
-    responses: { ...writeErrors, 201: jsonResult(rows(Message), "Created message.") },
+    description: "Send JSON for a text message, or multipart/form-data with board_id, title, optional body and an image file (PNG, JPEG, GIF, or WebP, at most 5 MiB). Uploaded images are stored under board-messages/ and prepended to the body as a public URL. The final body must fit within 2000 characters.",
+    request: { body: { content: {
+      ...jsonContent(messageInput), "multipart/form-data": { schema: messageImageInput },
+    } } },
+    responses: {
+      ...writeErrors, 201: jsonResult(rows(Message), "Created message."),
+      413: errorResult("The image exceeds 5 MiB (request_too_large)."),
+      415: errorResult("Unsupported file type or image signature (invalid_message_image)."),
+      503: errorResult("Image storage is unavailable (image_storage_unavailable)."),
+    },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
-    const input = messageInput.parse(await c.req.json());
+    const contentType = c.req.header("content-type")?.split(";")[0].trim().toLowerCase();
+    let input: z.infer<typeof messageInput>;
+    let file: File | undefined;
+    if (contentType === "multipart/form-data") {
+      const form = await c.req.formData();
+      if ([...form.keys()].some(key => !["board_id", "user_id", "title", "body", "image"].includes(key) || form.getAll(key).length !== 1)) {
+        throw new ApiError(400, "invalid_request");
+      }
+      const { image, ...values } = messageImageInput.parse(Object.fromEntries(form));
+      input = values;
+      file = image;
+    } else if (contentType === "application/json") {
+      input = messageInput.parse(await c.req.json());
+    } else {
+      throw new ApiError(415, "invalid_request");
+    }
     checkOwner(input.user_id, session.user_id);
-    const result = await c.env.DB.prepare("INSERT INTO messages(board_id,user_id,title,body) SELECT id,?,?,? FROM boards WHERE id=? RETURNING *")
-      .bind(session.user_id, input.title, input.body, input.board_id).first();
-    if (!result) throw new ApiError(404, "not_found");
-    return c.json({ data: [result] }, 201);
+    if (file && !await c.env.DB.prepare("SELECT id FROM boards WHERE id=?").bind(input.board_id).first()) {
+      throw new ApiError(404, "not_found");
+    }
+    const imageUrl = file ? await storeBoardImage(c.env, file, "board-messages") : null;
+    try {
+      const savedBody = messageBody.min(1).max(2000).parse(imageUrl
+        ? `${new URL(imageUrl, c.req.url).href}${input.body ? `\n${input.body}` : ""}` : input.body);
+      const result = await c.env.DB.prepare("INSERT INTO messages(board_id,user_id,title,body,image_url) SELECT id,?,?,?,? FROM boards WHERE id=? RETURNING *")
+        .bind(session.user_id, input.title, savedBody, imageUrl, input.board_id).first();
+      if (!result) throw new ApiError(404, "not_found");
+      return c.json({ data: [result] }, 201);
+    } catch (error) {
+      await deleteBoardImage(c.env, imageUrl, "board-messages");
+      throw error;
+    }
   });
 
   registerRoute(app, {
@@ -294,8 +334,8 @@ export function registerDataRoutes(app: Api): void {
     const query = deleteQuery.parse(queryValues(c.req.url));
     if (query.user_id !== undefined) checkOwner(equality(query.user_id), session.user_id);
     const id = equality(query.id);
-    const existing = await c.env.DB.prepare("SELECT board_id,user_id FROM messages WHERE id=?")
-      .bind(id).first<{ board_id: string; user_id: string }>();
+    const existing = await c.env.DB.prepare("SELECT board_id,user_id,image_url FROM messages WHERE id=?")
+      .bind(id).first<{ board_id: string; user_id: string; image_url: string | null }>();
     if (!existing || (query.board_id !== undefined && equality(query.board_id) !== existing.board_id)) throw new ApiError(404, "not_found");
     checkOwner(existing.user_id, session.user_id);
     // D1's changes metadata includes cascading replies. RETURNING confirms the
@@ -303,6 +343,7 @@ export function registerDataRoutes(app: Api): void {
     const result = await c.env.DB.prepare("DELETE FROM messages WHERE id=? AND user_id=? AND board_id=? RETURNING id")
       .bind(id, session.user_id, existing.board_id).first<{ id: string }>();
     if (!result) throw new ApiError(404, "not_found");
+    await deleteBoardImage(c.env, existing.image_url, "board-messages");
     return c.json({ data: [], meta: { changes: 1 } });
   });
 }
