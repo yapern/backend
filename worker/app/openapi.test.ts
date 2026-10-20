@@ -39,11 +39,26 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
   assert.deepEqual(doc.servers, [{ url: "/", description: "Current environment" }]);
   const documented = Object.entries(doc.paths).flatMap(([path, methods]) =>
     Object.keys(methods).map((method) => `${method.toUpperCase()} ${path}`)).sort();
-  const registered = app.routes.filter((route) => route.method !== "ALL"
+  const registered = [...new Set(app.routes.filter((route) => route.method !== "ALL"
     && !["/docs", "/docs/", "/openapi.json"].includes(route.path))
-    .map((route) => `${route.method} ${route.path}`).sort();
+    .map((route) => `${route.method} ${route.path.replace(/:([A-Za-z_]\w*)/g, "{$1}")}`))].sort();
   assert.deepEqual(documented, registered);
-  assert.deepEqual(documented, ["GET /health", "GET /state"]);
+  assert.deepEqual(documented, [
+    "DELETE /bff/data/{projectId}/auth/session",
+    "DELETE /bff/data/{projectId}/tables/messages",
+    "GET /bff/data/{projectId}/auth/session",
+    "GET /bff/data/{projectId}/tables/boards",
+    "GET /bff/data/{projectId}/tables/messages",
+    "GET /bff/data/{projectId}/tables/replies",
+    "GET /bff/data/{projectId}/tables/users",
+    "GET /health", "GET /state",
+    "PATCH /bff/data/{projectId}/tables/users",
+    "POST /bff/data/{projectId}/auth/email",
+    "POST /bff/data/{projectId}/tables/boards",
+    "POST /bff/data/{projectId}/tables/messages",
+    "POST /bff/data/{projectId}/tables/replies",
+    "POST /bff/og-image",
+  ]);
   const ids = new Set<string>();
   for (const methods of Object.values(doc.paths)) {
     for (const operation of Object.values(methods)) {
@@ -51,9 +66,10 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
       assert.ok(operation.operationId);
       assert.ok(!ids.has(operation.operationId), `Duplicate operationId: ${operation.operationId}`);
       ids.add(operation.operationId);
-      assert.ok(operation.responses["200"]?.content["application/json"].schema);
+      assert.ok((operation.responses["200"] ?? operation.responses["201"])?.content["application/json"].schema);
       for (const response of Object.values(operation.responses)) assert.ok(response.description);
-      assert.deepEqual(operation.security, []);
+      assert.ok(Array.isArray(operation.security));
+      for (const security of operation.security) assert.deepEqual(security, { bearerAuth: [] });
     }
   }
   function checkReferences(value: unknown): void {
@@ -72,9 +88,26 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
 
 test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
-  assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), []);
-  assert.deepEqual(Object.keys(doc.components.schemas).sort(), ["AppState", "Error", "Ok"]);
-  assert.deepEqual(doc.tags, [{ name: "System" }]);
+  assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
+  assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
+    "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateReply",
+    "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
+    "Message", "Ok", "PublicProfile", "Reply", "RevokedSession", "UpdateProfile",
+  ]);
+  assert.deepEqual(doc.tags, [
+    { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
+    { name: "Messages" }, { name: "Replies" }, { name: "Previews" },
+  ]);
+});
+
+test("OpenAPI marks every write and session operation as authenticated", async () => {
+  const doc = await document();
+  for (const [path, methods] of Object.entries(doc.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      const requiresSession = (method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email");
+      assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
+    }
+  }
 });
 
 test("docs is public HTML pointing at the generated document", async () => {
