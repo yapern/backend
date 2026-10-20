@@ -144,6 +144,18 @@ test("all supported image formats and the exact 5 MiB boundary are accepted with
   assert.equal(api.objects.size, 1);
 });
 
+test("multipart descriptions normalize newlines before the 2000-character limit and match JSON edits", async t => {
+  const api = await fixture(t);
+  const description = "First line\nSecond line\n\n" + "x".repeat(1976);
+  assert.equal(description.length, 2000);
+  const uploaded = await saved(await api.upload(image(), description));
+  assert.equal(uploaded.description, description);
+  assert.equal(api.read().description, description);
+  const jsonEdit = await saved(await api.patch({ description: description.replaceAll("\n", "\r\n") }));
+  assert.equal(jsonEdit.description, description);
+  assert.equal(jsonEdit.logo_url, uploaded.logo_url);
+});
+
 test("uploads reject spoofed types, unsupported images, empty or oversized files, and invalid fields", async t => {
   const api = await fixture(t);
   for (const file of [image(new Uint8Array(), "image/png"), image(new TextEncoder().encode("<svg/>"), "image/png"), image(png, "image/jpeg"), image(png, "image/svg+xml")]) {

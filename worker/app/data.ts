@@ -7,6 +7,7 @@ import { deleteBoardLogo, storeBoardLogo } from "./board-logos";
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
 const body = z.string().trim().min(1).max(2000);
+const boardDescription = z.string().overwrite(value => value.replace(/\r\n?/g, "\n").trim()).max(2000);
 const filter = z.string().min(4).max(515).startsWith("eq.");
 const pagination = {
   select: z.string().max(256).optional(),
@@ -37,7 +38,7 @@ const ownerInput = { user_id: identifier.optional() };
 const boardInput = z.object({
   ...ownerInput,
   slug: z.string().min(1).max(80).regex(/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$/),
-  name, description: z.string().trim().max(2000).default(""),
+  name, description: boardDescription.default(""),
 }).strict().openapi("CreateBoard");
 const messageInput = z.object({
   ...ownerInput, board_id: identifier, title: z.string().trim().min(1).max(200), body,
@@ -45,10 +46,10 @@ const messageInput = z.object({
 const replyInput = z.object({ ...ownerInput, message_id: identifier, body }).strict().openapi("CreateReply");
 const profileInput = z.object({ name }).strict().openapi("UpdateProfile");
 const boardUpdateInput = z.object({
-  description: z.string().trim().max(2000), remove_logo: z.boolean().optional(),
+  description: boardDescription, remove_logo: z.boolean().optional(),
 }).strict().openapi("UpdateBoardDescription");
 const boardLogoInput = z.object({
-  description: z.string().trim().max(2000),
+  description: boardDescription,
   logo: z.instanceof(File).openapi({ type: "string", format: "binary" }),
 }).strict().openapi("UpdateBoardLogo");
 const boardUpdateQuery = z.object({ id: filter, user_id: filter.optional() }).strict();
