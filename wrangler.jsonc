@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yapern-api",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "cache": {
+    "enabled": true
+  },
+  "vars": {
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "delta",
+      "database_id": "183b6e44-28a9-4ce8-a29e-f50933220622",
+      "migrations_dir": "migrations",
+      "migrations_table": "schema_migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "romeo"
+    }
+  ],
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
+  },
+  "routes": [
+    {
+      "pattern": "api.yapern.com",
+      "custom_domain": true
+    }
+  ]
+}
