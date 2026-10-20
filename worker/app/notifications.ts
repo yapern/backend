@@ -56,7 +56,7 @@ export function registerNotificationRoutes(app: Api): void {
   };
   registerRoute(app, {
     method: "get", path: "/notifications", operationId: "listNotifications",
-    tags: ["Notifications"], summary: "Read your latest 50 reply notifications and total unread count", security: protectedSecurity,
+    tags: ["Notifications"], summary: "Read your latest 50 reply and upvote notifications and total unread count", security: protectedSecurity,
     responses: { ...errors, 200: jsonResult(NotificationSnapshot, "Recipient-scoped notification snapshot.") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
@@ -88,7 +88,7 @@ export function registerNotificationRoutes(app: Api): void {
   registerRoute(app, {
     method: "get", path: "/notifications/socket", operationId: "connectNotifications",
     tags: ["Notifications"], summary: "Upgrade to a hibernating WebSocket using a single-use ticket", security: [],
-    description: "Requires an allowed browser Origin and an unexpired ticket from POST /notifications/ticket. Sends NotificationSnapshot on connect and on reply/read changes. Send ping for a runtime-level pong. Rejects reused tickets and revoked sessions.",
+    description: "Requires an allowed browser Origin and an unexpired ticket from POST /notifications/ticket. Sends NotificationSnapshot on connect and on reply/upvote/read changes. Send ping for a runtime-level pong. Rejects reused tickets and revoked sessions.",
     request: { query: z.object({ user_id: z.string().min(1).max(512), ticket: z.string().regex(/^[a-f0-9]{64}$/) }).strict() },
     responses: {
       101: { description: "WebSocket connected." },

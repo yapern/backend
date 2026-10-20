@@ -60,6 +60,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/messages",
     "GET /tables/replies",
     "GET /tables/users",
+    "GET /votes",
     "HEAD /board-logos/{filename}",
     "HEAD /board-messages/{filename}",
     "HEAD /preview-images/{filename}",
@@ -72,6 +73,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "POST /tables/boards",
     "POST /tables/messages",
     "POST /tables/replies",
+    "PUT /votes",
   ]);
   const ids = new Set<string>();
   for (const methods of Object.values(doc.paths)) {
@@ -110,11 +112,11 @@ test("OpenAPI contains only current schemas and tags", async () => {
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
     "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "RevokedSession", "SearchResults", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile",
+    "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
-    { name: "Messages" }, { name: "Replies" }, { name: "Previews" }, { name: "Notifications" }, { name: "Search" },
+    { name: "Messages" }, { name: "Replies" }, { name: "Votes" }, { name: "Previews" }, { name: "Notifications" }, { name: "Search" },
   ]);
 });
 

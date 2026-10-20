@@ -31,7 +31,9 @@ API routes:
 | GET | `/tables/replies` | Read replies |
 | GET | `/search` | Full-text search over public messages or boards |
 | POST | `/tables/replies` | Reply to an original message |
-| GET | `/notifications` | Read your latest 50 reply notifications and total unread count |
+| GET | `/votes` | Read scores and your votes for messages and replies |
+| PUT | `/votes` | Set your vote on one message or reply |
+| GET | `/notifications` | Read your latest 50 reply and upvote notifications and total unread count |
 | POST | `/notifications/read` | Mark notifications through an observed ID as read |
 | POST | `/notifications/ticket` | Create a single-use WebSocket ticket valid for 60 seconds |
 | GET | `/notifications/socket` | Upgrade to a WebSocket using `user_id` and `ticket` query parameters |
@@ -47,6 +49,26 @@ Responses retain the frontend's `{ "data": [...] }` shape. Profile updates
 require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
+
+Voting requires migration `012_votes.sql`, which gives existing messages and
+replies their author's initial +1 vote and preserves existing notifications.
+New messages and replies receive the same author vote automatically. Apply the
+migration before deploying the API, then deploy the web app.
+
+Read `/votes?message_ids=<id>,<id>&reply_ids=<id>` with up to 100 IDs of each
+type. Each returned row contains `id`, `type` (`message` or `reply`), `score`,
+and `user_vote`. Missing targets are omitted. Public reads return `user_vote: 0`;
+include a bearer session to read your contribution.
+
+Send authenticated `PUT /votes` with `{ "message_id": "<id>", "value": 1 }`
+or `{ "reply_id": "<id>", "value": 0 }`. Each user has one contribution per
+target, limited to -1, 0, or +1. Repeating a value leaves the score unchanged.
+Opposite votes pass through zero: downvoting after your upvote removes it first,
+changing a score of 2 back to 1. Setting +1 directly to -1, or the reverse,
+returns 409. The author already contributes +1 and cannot add another upvote.
+An upvote sends the target's author a notification, excluding self-votes.
+Each actor creates at most one upvote notification per target; removing and
+restoring a vote preserves the existing notification and its read state.
 
 Search uses D1 FTS5 indexes over message titles/bodies and board slugs/names/
 descriptions. Apply `011_full_text_search.sql` before deploying the API, then
@@ -92,7 +114,7 @@ The combined body, including the image URL, must fit within 2000 characters.
 Failed message creation removes the uploaded object. Apply
 `009_message_images.sql` before deploying the API, then deploy the web app.
 
-Reply notifications use one SQLite-backed `UserNotifications` Durable Object per
+Reply and upvote notifications use one SQLite-backed `UserNotifications` Durable Object per
 recipient, with Cloudflare's [WebSocket Hibernation API](https://developers.cloudflare.com/durable-objects/examples/websocket-hibernation-server/).
 The `NOTIFICATIONS` binding and `v1-notifications` Durable Object migration are
 configured in `wrangler.jsonc`. Apply `010_reply_notifications.sql` before
@@ -100,7 +122,9 @@ deploying the API, then deploy the web app. `npm run deploy` applies D1 migratio
 and deploys the Worker with its Durable Object migration.
 
 A D1 trigger creates an unread notification in the same transaction as each
-reply, excluding replies to your own messages. D1 retains unread state while
+reply or first upvote, excluding notifications for your own actions. Snapshot
+entries include `kind` (`reply` or `upvote`), the parent `message_id`, and a
+nullable `reply_id` identifying a reply when applicable. D1 retains unread state while
 all tabs are closed; opening a socket sends the current persisted snapshot.
 Successful writes push snapshots to all connected recipient tabs. The existing
 five-minute cron retries failed deliveries using the durable notification
@@ -108,7 +132,7 @@ outbox. Deleting a message cascades its notifications and refreshes its author's
 connected tabs. The inbox keeps read notifications and returns the latest 50.
 
 `POST /notifications/read` accepts `{ "through_id": <last_id from a snapshot> }`.
-It acknowledges only notifications through that ID, preserving later replies,
+It acknowledges only notifications through that ID, preserving later notifications,
 and broadcasts the updated count across tabs. Every snapshot carries a monotonic
 per-user `version` so clients can discard delayed responses.
 

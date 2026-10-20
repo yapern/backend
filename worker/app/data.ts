@@ -340,13 +340,20 @@ export function registerDataRoutes(app: Api): void {
       .bind(id).first<{ board_id: string; user_id: string; image_url: string | null }>();
     if (!existing || (query.board_id !== undefined && equality(query.board_id) !== existing.board_id)) throw new ApiError(404, "not_found");
     checkOwner(existing.user_id, session.user_id);
+    // A reply author can receive an upvote on their reply. Deleting the parent
+    // cascades that notification, so refresh every affected recipient's socket.
+    const affected = await c.env.DB.prepare(`SELECT DISTINCT user_id FROM notifications
+      WHERE message_id=? OR reply_id IN (SELECT id FROM replies WHERE message_id=?)`)
+      .bind(id, id).all<{ user_id: string }>();
     // D1's changes metadata includes cascading replies. RETURNING confirms the
     // exact parent deletion independently of the number of replies removed.
     const result = await c.env.DB.prepare("DELETE FROM messages WHERE id=? AND user_id=? AND board_id=? RETURNING id")
       .bind(id, session.user_id, existing.board_id).first<{ id: string }>();
     if (!result) throw new ApiError(404, "not_found");
     await deleteBoardImage(c.env, existing.image_url, "board-messages");
-    await publishNotifications(c.env, existing.user_id);
+    for (const recipientId of new Set([existing.user_id, ...affected.results.map(row => row.user_id)])) {
+      await publishNotifications(c.env, recipientId);
+    }
     return c.json({ data: [], meta: { changes: 1 } });
   });
 }
