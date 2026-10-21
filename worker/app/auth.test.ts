@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, scryptSync } from "node:crypto";
 import test from "node:test";
 import { handleRequest } from "./router";
 import { createTestDatabase } from "../testing/database";
@@ -72,6 +72,31 @@ test("login checks the exact password and cannot claim a legacy email user", asy
     .get()?.count, 0);
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM users WHERE lower(email) = 'legacy@example.com'")
     .get()?.count, 1);
+});
+
+test("public signup cannot claim the admin address and provisioned admin credentials can still sign in", async t => {
+  const f = fixture(t);
+  const takeover = await f.email(" OneOne@Gmail.com ", "attacker password");
+  assert.equal(takeover.status, 401);
+  assert.deepEqual(await takeover.json(), { error: "invalid_credentials" });
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM users").get()?.count, 0);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
+
+  const password = "provisioned admin password";
+  const salt = "a".repeat(32);
+  const hash = scryptSync(password, Buffer.from(salt, "hex"), 64).toString("hex");
+  f.sqlite.prepare("INSERT INTO users(id, email) VALUES ('admin', 'oneone@gmail.com')").run();
+  f.sqlite.prepare("INSERT INTO email_credentials(user_id, password_salt, password_hash) VALUES ('admin', ?, ?)").run(salt, hash);
+  assert.equal((await f.email("oneone@gmail.com", "wrong password")).status, 401);
+  const response = await f.email("ONEONE@gmail.com", password);
+  assert.equal(response.status, 200);
+  const session = await response.json() as AuthResponse;
+  assert.equal(session.user.id, "admin");
+  assert.equal(session.created, false);
+  const admin = await handleRequest(new Request("https://api.yapern.com/admin/users", {
+    headers: { authorization: `Bearer ${session.token}` },
+  }), { DB: f.db } as Env);
+  assert.equal(admin.status, 200);
 });
 
 test("session check rejects expiry and spoofed identity; revoke is exact and idempotent", async t => {

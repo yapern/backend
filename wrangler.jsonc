@@ -9,6 +9,9 @@
   },
   "vars": {
   },
+  "send_email": [
+    { "name": "MARKETING_EMAIL" }
+  ],
   "durable_objects": {
     "bindings": [{ "name": "NOTIFICATIONS", "class_name": "UserNotifications" }]
   },

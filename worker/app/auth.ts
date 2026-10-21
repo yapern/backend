@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, scrypt, timingSafeEqual, createHash } from "no
 import { z } from "@hono/zod-openapi";
 import { ApiError, protectedSecurity } from "./contracts";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
+import { ADMIN_EMAIL } from "../shared/admin";
 
 const TOKEN_PATTERN = /^bff_us_[a-f0-9]{64}$/;
 const SESSION_DAYS = 30;
@@ -142,6 +143,7 @@ export function registerAuthRoutes(app: Api): void {
   registerRoute(app, {
     method: "post", path: "/auth/email", operationId: "emailAuth",
     tags: ["Auth"], summary: "Sign in or create an email account", security: [],
+    description: "Public signup does not verify email ownership. The reserved admin address can only sign in to an existing account with provisioned credentials; it cannot be claimed by signup.",
     request: { body: { required: true, content: jsonContent(EmailBody) } },
     responses: {
       200: jsonResult(AuthResult, "Signed in."),
@@ -162,6 +164,9 @@ export function registerAuthRoutes(app: Api): void {
     if (row) {
       if (!await verifyPassword(password, row)) throw new ApiError(401, "invalid_credentials");
     } else {
+      // Public signup does not prove address ownership. Never bootstrap admin
+      // access by allowing the first caller to claim the reserved mailbox.
+      if (email === ADMIN_EMAIL) throw new ApiError(401, "invalid_credentials");
       if (password.length < 8) throw new ApiError(400, "weak_password");
       const candidateId = randomUUID();
       const salt = randomBytes(16).toString("hex");

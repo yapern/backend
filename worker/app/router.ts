@@ -3,6 +3,7 @@ import { swaggerUI } from "@hono/swagger-ui";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
+import type { MiddlewareHandler } from "hono";
 import { jsonResponse } from "../shared/http";
 import { errorResult, jsonResult, OkSchema, registerRoute, type ApiEnv } from "../shared/openapi";
 import { registerAuthRoutes } from "./auth";
@@ -14,6 +15,8 @@ import { registerNotificationRoutes } from "./notifications";
 import { registerSearchRoutes } from "./search";
 import { registerVoteRoutes } from "./votes";
 import { registerReplyPageRoutes } from "./reply-pages";
+import { registerAdminRoutes } from "./admin";
+import { registerMarketingEmailRoutes } from "./marketing-email";
 
 export const app = new OpenAPIHono<ApiEnv>({
   defaultHook: (result, c) => {
@@ -35,19 +38,27 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*"]) {
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
+  // Forms hosted by this API submit from its own origin.
+  const isAllowed = (origin: string, env: Env, requestUrl: string) => allowedOrigins(env).includes(origin) ||
+    (path === "/unsubscribe" && origin === new URL(requestUrl).origin);
+  const checkOrigin: MiddlewareHandler<ApiEnv> = async (c, next) => {
+    const origin = c.req.header("origin");
+    if (origin && !isAllowed(origin, c.env, c.req.url)) throw new ApiError(403, "origin_not_allowed");
+    await next();
+  };
+  const checkPreflight = path.startsWith("/admin/") || path.startsWith("/api/") || path === "/unsubscribe";
+  if (checkPreflight) app.use(path, checkOrigin);
   app.use(path, cors({
-    origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
+    origin: (origin, c) => isAllowed(origin, c.env, c.req.url) ? origin : "",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["apikey", "Authorization", "Content-Type", "Idempotency-Key"],
     exposeHeaders: ["Retry-After"],
     maxAge: 600,
   }));
-  app.use(path, async (c, next) => {
-    const origin = c.req.header("origin");
-    if (origin && !allowedOrigins(c.env).includes(origin)) throw new ApiError(403, "origin_not_allowed");
-    await next();
-  });
+  if (!checkPreflight) app.use(path, checkOrigin);
+  // Marketing POST routes enforce their own actual-stream byte limits after auth.
+  if (path.startsWith("/api/") || path === "/unsubscribe") continue;
   app.use(path, (c, next) => bodyLimit({
     maxSize: ((c.req.method === "PATCH" && c.req.path === "/tables/boards") ||
       (c.req.method === "POST" && c.req.path === "/tables/messages")) &&
@@ -69,6 +80,8 @@ registerVoteRoutes(app);
 registerBoardImageRoutes(app);
 registerPreviewRoutes(app);
 registerNotificationRoutes(app);
+registerAdminRoutes(app);
+registerMarketingEmailRoutes(app);
 
 registerRoute(app, {
   method: "get", path: "/health", operationId: "getHealth",
@@ -98,13 +111,14 @@ app.doc31("/openapi.json", {
   info: {
     title: "Yapern API",
     version: "1.0.0",
-    description: "Yapern accounts, boards, messages, replies, link previews with queued screenshots, and system endpoints. JSON responses are not cached; public screenshot images support caching.",
+    description: "Yapern accounts, boards, messages, replies, link previews with queued screenshots, notifications, admin reads, marketing emails, and system endpoints. JSON responses are not cached; public screenshot images support caching.",
   },
   servers: [{ url: "/", description: "Current environment" }],
   tags: [
     { name: "System" },
     { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
     { name: "Messages" }, { name: "Replies" }, { name: "Votes" }, { name: "Previews" }, { name: "Notifications" }, { name: "Search" },
+    { name: "Admin" }, { name: "Marketing" },
   ],
 });
 

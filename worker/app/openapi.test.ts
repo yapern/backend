@@ -7,6 +7,9 @@ type Operation = {
   operationId: string;
   summary: string;
   security: Record<string, string[]>[];
+  description?: string;
+  parameters?: { name: string; in: string; schema: Record<string, unknown>; required?: boolean }[];
+  requestBody?: { content: Record<string, { schema: { $ref?: string } }> };
   responses: Record<string, {
     description: string;
     content: Record<string, { schema: unknown }>;
@@ -46,6 +49,11 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
   assert.deepEqual(documented, [
     "DELETE /auth/session",
     "DELETE /tables/messages",
+    "GET /admin/tables",
+    "GET /admin/tables/{table}",
+    "GET /admin/users",
+    "GET /admin/users/{userId}",
+    "GET /api/get-marketing-users",
     "GET /auth/session",
     "GET /board-logos/{filename}",
     "GET /board-messages/{filename}",
@@ -62,12 +70,15 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/messages",
     "GET /tables/replies",
     "GET /tables/users",
+    "GET /unsubscribe",
     "GET /votes",
     "HEAD /board-logos/{filename}",
     "HEAD /board-messages/{filename}",
     "HEAD /preview-images/{filename}",
     "PATCH /tables/boards",
     "PATCH /tables/users",
+    "POST /api/send-marketing-email",
+    "POST /api/unsubscribe",
     "POST /auth/email",
     "POST /notifications/read",
     "POST /notifications/ticket",
@@ -75,6 +86,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "POST /tables/boards",
     "POST /tables/messages",
     "POST /tables/replies",
+    "POST /unsubscribe",
     "PUT /votes",
   ]);
   const ids = new Set<string>();
@@ -84,7 +96,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
       assert.ok(operation.operationId);
       assert.ok(!ids.has(operation.operationId), `Duplicate operationId: ${operation.operationId}`);
       ids.add(operation.operationId);
-      const success = operation.responses["200"] ?? operation.responses["201"];
+      const success = operation.responses["200"] ?? operation.responses["201"] ?? operation.responses["202"];
       if (operation.responses["101"]) assert.ok(operation.responses["101"].description);
       else assert.ok(Object.values(success.content).some(content => content.schema));
       for (const response of Object.values(operation.responses)) assert.ok(response.description);
@@ -112,13 +124,14 @@ test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
-    "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
+    "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
+    "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
     { name: "Messages" }, { name: "Replies" }, { name: "Votes" }, { name: "Previews" }, { name: "Notifications" }, { name: "Search" },
+    { name: "Admin" }, { name: "Marketing" },
   ]);
 });
 
@@ -136,14 +149,43 @@ test("OpenAPI describes preview diagnostic stages and safe failure fields", asyn
   }
 });
 
-test("OpenAPI marks every write and session operation as authenticated", async () => {
+test("admin and marketing schemas document access, pagination, email acceptance and public unsubscribe", async () => {
+  const doc = await document();
+  const recipients = doc.paths["/api/get-marketing-users"].get;
+  assert.match(recipients.description!, /marketing_email_unsubscribed/);
+  const params = Object.fromEntries(recipients.parameters!.map(parameter => [parameter.name, parameter.schema]));
+  assert.equal(params.limit.maximum, 100);
+  assert.equal(params.limit.minimum, 1);
+  assert.equal(params.limit.default, 25);
+  assert.equal(params.offset.maximum, 1_000_000);
+  assert.equal(params.offset.minimum, 0);
+  const user = doc.components.schemas.AdminUser as { properties: Record<string, unknown> };
+  assert.deepEqual(Object.keys(user.properties).sort(), ["created_at", "dob", "email", "id", "marketing_email_unsubscribed", "name"]);
+  const send = doc.paths["/api/send-marketing-email"].post;
+  assert.ok(send.responses["202"]);
+  for (const status of ["400", "401", "403", "409", "413", "429", "502", "503"]) assert.ok(send.responses[status]);
+  assert.ok(send.parameters!.some(parameter => parameter.in === "header" && parameter.name === "origin" && parameter.required));
+  assert.equal(send.requestBody!.content["application/json"].schema.$ref, "#/components/schemas/MarketingEmailRequest");
+  const email = doc.components.schemas.MarketingEmailRequest as { properties: Record<string, { default?: unknown }>; additionalProperties: boolean };
+  assert.deepEqual(Object.keys(email.properties).sort(), ["fancy", "from", "message", "subj", "to"]);
+  assert.equal(email.properties.fancy.default, true);
+  assert.equal(email.additionalProperties, false);
+  assert.deepEqual(doc.paths["/api/unsubscribe"].post.security, []);
+  assert.deepEqual(doc.paths["/unsubscribe"].get.security, []);
+  assert.deepEqual(doc.paths["/unsubscribe"].post.security, []);
+  assert.ok(doc.paths["/unsubscribe"].post.requestBody!.content["application/x-www-form-urlencoded"]);
+  assert.match(doc.paths["/auth/email"].post.description!, /reserved admin address/);
+});
+
+test("OpenAPI marks protected operations as authenticated and unsubscribe as public", async () => {
   const doc = await document();
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
-      const requiresSession = path.startsWith("/previews/") ||
+      const requiresSession = path.startsWith("/admin/") || path === "/api/get-marketing-users" || path.startsWith("/previews/") ||
         (path === "/notifications" || path === "/notifications/read" || path === "/notifications/ticket") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
-          !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/"));
+          !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/") &&
+          path !== "/unsubscribe" && path !== "/api/unsubscribe");
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }

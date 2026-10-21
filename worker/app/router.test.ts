@@ -56,10 +56,7 @@ test("retired routes return not found", async (t) => {
     ["POST", "/auth/app/refresh"],
     ["POST", "/auth/app/logout"],
     ["POST", "/auth/app/legacy-exchange"],
-    ["GET", "/admin/tables"],
-    ["GET", "/admin/tables/herds"],
     ["OPTIONS", "/auth/google"],
-    ["OPTIONS", "/admin/tables"],
   ] as const;
 
   for (const [method, path] of retiredRoutes) {

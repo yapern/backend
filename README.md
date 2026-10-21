@@ -20,6 +20,14 @@ API routes:
 | POST | `/auth/email` | Sign in, or create a new email account |
 | GET | `/auth/session` | Read the signed-in session |
 | DELETE | `/auth/session` | Revoke this session |
+| GET | `/admin/users` | Admin-only safe user profiles, newest first |
+| GET | `/admin/users/:userId` | Admin-only user profile detail |
+| GET | `/admin/tables` | Admin-only catalog of available tables and columns |
+| GET | `/admin/tables/:table` | Admin-only table search and pagination |
+| GET | `/api/get-marketing-users` | Admin-only users who have not opted out of marketing |
+| POST | `/api/send-marketing-email` | Admin-only marketing email sending |
+| POST | `/api/unsubscribe` | Public permanent marketing email opt-out |
+| GET / POST | `/unsubscribe` | Public email unsubscribe form and confirmation |
 | GET | `/tables/boards` | Read boards |
 | POST | `/tables/boards` | Create a board |
 | PATCH | `/tables/boards` | Update the description and logo of a board you created |
@@ -44,6 +52,70 @@ API routes:
 | POST | `/og-image` | Read link metadata or queue a screenshot |
 | GET | `/previews/{id}` | Read your screenshot job status |
 | GET, HEAD | `/preview-images/{id}.jpg` | Read a public cached screenshot |
+
+## Admin and marketing email
+
+Admin routes use Yapern's existing `Authorization: Bearer <token>` sessions and
+require the current account email to be `oneone@gmail.com` (case-insensitive,
+trimmed), matching Mainbrella's access policy. Sessions must be unexpired and
+still belong to that address. Credentials, session tokens, and provider IDs are
+excluded. The admin account must already have trusted, provisioned email
+credentials: public signup cannot claim the reserved admin address because signup
+does not verify email ownership. Existing admin credentials continue to work.
+The available tables are `users`, `boards`, `messages`, and `replies`;
+`/admin/tables/:table?q=<literal-substring>&offset=0` returns 25 rows and a
+filtered total. These endpoints are read-only. Yapern has no billing subsystem,
+so there are no balance or billing-history endpoints.
+
+`GET /api/get-marketing-users?offset=0&limit=25` returns
+`{ "users": [...], "total": 0, "offset": 0, "limit": 25 }`, with only `id`,
+`email`, `name`, and `created_at` per user. Limits are 1–100 and offsets
+0–1,000,000. Results exclude user-level and address-level opt-outs, including
+other accounts sharing a normalized address. Like Mainbrella, null email
+addresses remain in this list; skip them when preparing sends.
+
+Apply `015_marketing_email_unsubscribe.sql` before deploying the new Worker.
+`wrangler.jsonc` adds the `MARKETING_EMAIL` Email Sending binding. The sender's
+domain must be onboarded with Cloudflare Email Sending before live sends work;
+local Wrangler simulates sends. No email is sent by migrations or deployment.
+
+Send one message with the admin bearer token, `Content-Type: application/json`,
+and a trusted `Origin` such as `https://yapern.com`:
+
+```json
+{
+  "to": "person@example.com",
+  "from": "Yapern <hello@yapern.com>",
+  "subj": "An update from Yapern",
+  "message": "Your message here.\nLine breaks are preserved.",
+  "fancy": true
+}
+```
+
+`fancy` defaults to true for the Yapern template; false uses plain white HTML
+with an unsubscribe footer. Messages are treated as plain text and HTML-escaped.
+The JSON body limit is 1 MiB; message text is limited to 100,000 characters.
+Success is `202 { "ok": true, "messageId": "..." }`, confirming provider
+acceptance. This does not confirm inbox delivery. Sends are never retried
+automatically. Unsubscribed recipients return 409 `recipient_unsubscribed`;
+failed preference checks return 503 `email_preferences_unavailable` and prevent
+sending. Provider rate limits return 429; other send failures return 502.
+
+Both HTML and text include a link to
+`https://api.yapern.com/unsubscribe?email=<encoded-address>`. The public page
+requires a form submission, works without JavaScript, and changes no preferences
+on GET, so email scanners cannot opt out a recipient merely by visiting. A
+frontend can instead call public `POST /api/unsubscribe` with
+`{ "email": "person@example.com" }` (maximum body 4 KiB). Addresses are trimmed,
+lowercased, and permanently opted out even before an account exists. All matching
+accounts are updated atomically. Repeated requests return the same `{ "ok": true }`
+confirmation for registered and unregistered addresses.
+
+Browser origins follow `YAPERN_ORIGINS` and the existing Yapern/local defaults.
+The backend-hosted unsubscribe form also permits its own origin.
+Run `npm run test:admin` and `npm run test:marketing` for focused checks.
+
+## Discussion API
 
 Collection reads retain `select`, `eq.` filters, `order=field.asc` or
 `field.desc`, and `limit`/`offset` pagination. The maximum page size is 100.

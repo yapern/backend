@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test worker/app/*.test.ts worker/durable-objects/*.test.ts",
+    "test:admin": "node --import tsx --test worker/app/admin.test.ts",
+    "test:marketing": "node --import tsx --test worker/app/marketing-email.test.ts",
     "dev": "wrangler dev --local",
     "dev:lan": "wrangler dev --local --ip 0.0.0.0",
     "db:migrate:local": "wrangler d1 migrations apply delta --local",
