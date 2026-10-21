@@ -49,6 +49,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
   assert.deepEqual(documented, [
     "DELETE /auth/session",
     "DELETE /tables/messages",
+    "DELETE /videos/{id}",
     "GET /admin/tables",
     "GET /admin/tables/{table}",
     "GET /admin/users",
@@ -71,6 +72,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /tables/replies",
     "GET /tables/users",
     "GET /unsubscribe",
+    "GET /videos/{id}",
     "GET /votes",
     "HEAD /board-logos/{filename}",
     "HEAD /board-messages/{filename}",
@@ -83,10 +85,13 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "POST /notifications/read",
     "POST /notifications/ticket",
     "POST /og-image",
+    "POST /stream/webhook",
     "POST /tables/boards",
     "POST /tables/messages",
     "POST /tables/replies",
     "POST /unsubscribe",
+    "POST /videos",
+    "POST /videos/{id}/complete",
     "PUT /votes",
   ]);
   const ids = new Set<string>();
@@ -124,9 +129,9 @@ test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
-    "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateReply",
+    "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
-    "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
+    "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "MessageVideo", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
   assert.deepEqual(doc.tags, [
     { name: "System" }, { name: "Auth" }, { name: "Profiles" }, { name: "Boards" },
@@ -185,7 +190,7 @@ test("OpenAPI marks protected operations as authenticated and unsubscribe as pub
         (path === "/notifications" || path === "/notifications/read" || path === "/notifications/ticket") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
           !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/") &&
-          path !== "/unsubscribe" && path !== "/api/unsubscribe");
+          path !== "/unsubscribe" && path !== "/api/unsubscribe" && path !== "/stream/webhook");
       assert.deepEqual(operation.security, requiresSession ? [{ bearerAuth: [] }] : [], `${method} ${path}`);
     }
   }
