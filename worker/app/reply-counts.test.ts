@@ -32,7 +32,7 @@ test("reply counts backfill historical messages and replies without changing the
   }
 });
 
-test("reply counters track bulk writes, reassignment, deletion and rollback atomically", t => {
+test("reply counters track bulk writes, deletion and rollback; thread reassignment is rejected", t => {
   const database = createTestDatabase();
   t.after(() => database.close());
   const { sqlite } = database;
@@ -47,18 +47,18 @@ test("reply counters track bulk writes, reassignment, deletion and rollback atom
   sqlite.exec("UPDATE replies SET body='Edited' WHERE id='a'");
   sqlite.exec("UPDATE replies SET message_id=message_id WHERE id='a'");
   assert.deepEqual(counts(), [2, 1]);
-  sqlite.exec("UPDATE replies SET message_id='second' WHERE id='a'");
-  assert.deepEqual(counts(), [1, 2]);
+  assert.throws(() => sqlite.exec("UPDATE replies SET message_id='second' WHERE id='a'"), /reply_thread_is_immutable/);
+  assert.deepEqual(counts(), [2, 1]);
   sqlite.exec(`BEGIN;
     INSERT INTO replies(id,message_id,user_id,body) VALUES('rolled-back','first','author','Temporary');
     DELETE FROM replies WHERE id='a';
     ROLLBACK;`);
-  assert.deepEqual(counts(), [1, 2]);
+  assert.deepEqual(counts(), [2, 1]);
   assert.throws(() => sqlite.exec(`INSERT INTO replies(id,message_id,user_id,body) VALUES
     ('valid','first','author','Valid'), ('invalid','missing','author','Invalid');`));
-  assert.deepEqual(counts(), [1, 2], "a failed statement rolls back earlier rows and their increments");
+  assert.deepEqual(counts(), [2, 1], "a failed statement rolls back earlier rows and their increments");
   sqlite.exec("DELETE FROM replies WHERE message_id='second'");
-  assert.deepEqual(counts(), [1, 0]);
+  assert.deepEqual(counts(), [2, 0]);
   sqlite.exec("DELETE FROM messages WHERE id='first'");
   assert.deepEqual(counts(), [0], "parent deletion and its cascaded replies leave other counters intact");
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM replies").get()?.n, 0);

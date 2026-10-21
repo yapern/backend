@@ -29,8 +29,10 @@ API routes:
 | GET / HEAD | `/board-messages/:filename` | Read a public message image from R2 |
 | DELETE | `/tables/messages` | Delete your message and its replies |
 | GET | `/tables/replies` | Read replies |
+| GET | `/messages/:messageId/replies` | Read one page of immediate reply children |
+| GET | `/messages/:messageId/replies/:replyId/context` | Read bounded ancestry for a deep link |
 | GET | `/search` | Full-text search over public messages or boards |
-| POST | `/tables/replies` | Reply to an original message |
+| POST | `/tables/replies` | Reply to a message or another reply |
 | GET | `/votes` | Read scores and your votes for messages and replies |
 | PUT | `/votes` | Set your vote on one message or reply |
 | GET | `/notifications` | Read your latest 50 reply and upvote notifications and total unread count |
@@ -50,11 +52,64 @@ require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
 
-Messages expose a read-only `reply_count` stored on each message. Migration
+Messages expose a read-only `reply_count` containing every reply in the thread,
+including replies to replies. Migration
 `013_reply_counts.sql` backfills existing totals once, then database triggers
-adjust the counter atomically on reply insert, delete, or reassignment. Message
+adjust the counter atomically on reply insert or delete. Message
 reads do not count or join replies. Apply the migration and deploy the API before
 deploying the web app that requests `reply_count`.
+
+Nested replies require `014_nested_replies.sql`. Apply it and deploy the API
+before deploying the web app that requests `parent_reply_id` and reply-level
+`direct_reply_count`. Existing replies retain their IDs, content, votes,
+notifications, and timestamps, with `parent_reply_id: null` and zero children.
+
+Send authenticated `POST /tables/replies` with
+`{ "message_id": "<root-message-id>", "body": "...", "parent_reply_id": "<reply-id>" }`.
+Omit `parent_reply_id` or send null to reply directly to the message. A nested
+parent must exist in the same message; missing, deleted, or mismatched targets
+return 404. The server derives the author from the session. There is no
+application depth limit. Every reply retains the root `message_id`, the nullable
+immediate `parent_reply_id`, and a read-only `direct_reply_count` of immediate
+children only. Inserts and deletes update one immediate parent atomically in
+O(1), independent of depth; message `reply_count` still counts the whole thread.
+
+Use `/messages/<messageId>/replies?limit=20&sort=new` for the first 20 direct
+replies to a message. Add `parent_reply_id=<replyId>` for that reply's immediate
+children; no descendants load automatically. The response is
+`{ "data": [...], "meta": { "next_cursor": "..." } }`, with a null cursor when
+the branch is exhausted. Pass `cursor=<next_cursor>` to append the next page,
+and keep each branch's cursor independent. The maximum page size is 100.
+`sort=new` (default) orders newest first, `sort=old` oldest first, and `sort=top`
+by cached vote score descending; IDs break ties consistently. The cursor is
+opaque and scoped to the message, parent, and sort. Keyset cursors survive
+deletion of the last returned item. Top reflects live vote scores: deduplicate
+IDs when appending pages and refresh a branch to reflect rank changes.
+Dedicated indexes bound branch reads without aggregating sibling votes or
+scanning descendants. Each returned row includes joined `author_name`, avoiding
+one profile request per author. The old flat `/tables/replies` API remains
+available for compatibility; new thread UI should use branch pages.
+
+For a reply deep link, read
+`/messages/<messageId>/replies/<replyId>/context?limit=6`. It returns
+`{ "data": [...], "meta": { "has_more": true } }`: only the nearest ancestors,
+including the target, ordered oldest first. The default is 6 rows and maximum
+100; siblings and descendants are excluded. When ancestry is truncated, the
+first returned reply's `parent_reply_id` points to earlier context.
+
+Reply composers should generate one `Idempotency-Key` per submission and reuse
+it across retries. The optional header accepts 8–128 characters from letters,
+digits, `.`, `_`, `:`, and `-`, starting with a letter or digit; UUIDs work.
+Keys are unique per authenticated user. The same key, root, parent, and trimmed
+body returns the original reply with 201 and creates no duplicate counters,
+votes, or notifications. Reusing a key for another target or body returns 409
+`idempotency_conflict`. Calls without a key retain legacy creation behavior.
+
+Thread pointers and IDs are immutable, including direct SQL replacements;
+database guards prevent cycles and cross-message parents. Deleting a message
+removes its complete reply tree, votes, and notifications. There is no reply
+deletion API. Direct SQL cannot delete a reply while leaving its descendants;
+an atomic deletion of a complete subtree is permitted and maintains totals.
 
 Voting requires migration `012_votes.sql`, which gives existing messages and
 replies their author's initial +1 vote and preserves existing notifications.
@@ -128,14 +183,17 @@ deploying the API, then deploy the web app. `npm run deploy` applies D1 migratio
 and deploys the Worker with its Durable Object migration.
 
 A D1 trigger creates an unread notification in the same transaction as each
-reply or first upvote, excluding notifications for your own actions. Snapshot
-entries include `kind` (`reply` or `upvote`), the parent `message_id`, and a
+reply or first upvote, excluding notifications for your own actions.
+Reply notifications go to the immediate parent author: the message author for
+a direct reply, or the replied-to reply's author for a nested reply. Snapshot
+entries include `kind` (`reply` or `upvote`), the root `message_id`, and a
 nullable `reply_id` identifying a reply when applicable. D1 retains unread state while
 all tabs are closed; opening a socket sends the current persisted snapshot.
 Successful writes push snapshots to all connected recipient tabs. The existing
 five-minute cron retries failed deliveries using the durable notification
-outbox. Deleting a message cascades its notifications and refreshes its author's
-connected tabs. The inbox keeps read notifications and returns the latest 50.
+outbox. Deleting a message cascades its notifications and refreshes every
+affected recipient's connected tabs. The inbox keeps read notifications and
+returns the latest 50.
 
 `POST /notifications/read` accepts `{ "through_id": <last_id from a snapshot> }`.
 It acknowledges only notifications through that ID, preserving later notifications,

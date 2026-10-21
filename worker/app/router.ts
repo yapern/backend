@@ -13,6 +13,7 @@ import { MAX_IMAGE_BYTES, registerBoardImageRoutes } from "./board-images";
 import { registerNotificationRoutes } from "./notifications";
 import { registerSearchRoutes } from "./search";
 import { registerVoteRoutes } from "./votes";
+import { registerReplyPageRoutes } from "./reply-pages";
 
 export const app = new OpenAPIHono<ApiEnv>({
   defaultHook: (result, c) => {
@@ -34,11 +35,11 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*"]) {
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*"]) {
   app.use(path, cors({
     origin: (origin, c) => allowedOrigins(c.env).includes(origin) ? origin : "",
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["apikey", "Authorization", "Content-Type"],
+    allowHeaders: ["apikey", "Authorization", "Content-Type", "Idempotency-Key"],
     exposeHeaders: ["Retry-After"],
     maxAge: 600,
   }));
@@ -62,6 +63,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
 });
 registerAuthRoutes(app);
 registerDataRoutes(app);
+registerReplyPageRoutes(app);
 registerSearchRoutes(app);
 registerVoteRoutes(app);
 registerBoardImageRoutes(app);

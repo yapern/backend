@@ -29,8 +29,10 @@ const Message = z.object({
   body: z.string(), created_at: z.string(), image_url: z.string().nullable(),
   reply_count: z.number().int().nonnegative().openapi({ description: "Stored reply total, maintained atomically by database triggers." }),
 }).openapi("Message");
-const Reply = z.object({
+export const Reply = z.object({
   id: z.string(), message_id: z.string(), user_id: z.string(), body: z.string(), created_at: z.string(),
+  parent_reply_id: z.string().nullable().openapi({ description: "Immediate parent reply, or null for a direct reply to the root message." }),
+  direct_reply_count: z.number().int().nonnegative().openapi({ description: "Stored immediate-child reply count, maintained atomically by database triggers." }),
 }).openapi("Reply");
 
 const boardQuery = z.object({ ...pagination, id: filter.optional(), slug: filter.optional(), user_id: filter.optional() }).strict();
@@ -51,7 +53,12 @@ const messageImageInput = messageInput.extend({
   body: messageBody.max(2000).default(""),
   image: z.instanceof(File).openapi({ type: "string", format: "binary" }),
 }).openapi("CreateMessageImage");
-const replyInput = z.object({ ...ownerInput, message_id: identifier, body }).strict().openapi("CreateReply");
+const replyInput = z.object({
+  ...ownerInput, message_id: identifier, body, parent_reply_id: identifier.nullable().optional(),
+}).strict().openapi("CreateReply");
+const replyHeaders = z.object({
+  "idempotency-key": z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/).optional(),
+});
 const profileInput = z.object({ name }).strict().openapi("UpdateProfile");
 const boardUpdateInput = z.object({
   description: boardDescription, remove_logo: z.boolean().optional(),
@@ -87,7 +94,7 @@ type Collection = {
 const collections: Collection[] = [
   { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id", "logo_url"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
   { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url", "reply_count"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
-  { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
+  { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at", "parent_reply_id", "direct_reply_count"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
   { table: "users", fields: ["id", "name"], filters: ["id"], query: profileQuery, schema: Profile, tag: "Profiles", order: "id.asc" },
 ];
 
@@ -294,16 +301,40 @@ export function registerDataRoutes(app: Api): void {
 
   registerRoute(app, {
     method: "post", path: "/tables/replies", operationId: "createReply",
-    tags: ["Replies"], summary: "Reply to an original message", security: protectedSecurity,
-    request: { body: { required: true, content: jsonContent(replyInput) } },
-    responses: { ...writeErrors, 201: jsonResult(rows(Reply), "Created reply. Replies cannot target other replies.") },
+    tags: ["Replies"], summary: "Reply to a message or another reply", security: protectedSecurity,
+    description: "message_id always identifies the root message. Omit parent_reply_id (or send null) for a direct reply; otherwise provide an existing reply in that same message. Thread pointers are immutable and there is no application depth limit. direct_reply_count counts immediate children only. Optional Idempotency-Key (8–128 token characters) is scoped to the authenticated user; retry the same target and body with the same key to receive the original reply without duplicate votes, counters or notifications.",
+    request: { headers: replyHeaders, body: { required: true, content: jsonContent(replyInput) } },
+    responses: { ...writeErrors,
+      201: jsonResult(rows(Reply), "Created reply, or the original reply for an identical idempotent retry."),
+      409: errorResult("The idempotency key was already used for another body or target (idempotency_conflict)."),
+    },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
     const input = replyInput.parse(await c.req.json());
     checkOwner(input.user_id, session.user_id);
-    const result = await c.env.DB.prepare("INSERT INTO replies(message_id,user_id,body) SELECT id,?,? FROM messages WHERE id=? RETURNING *")
-      .bind(session.user_id, input.body, input.message_id).first<{ id: string }>();
-    if (!result) throw new ApiError(404, "not_found");
+    const parentId = input.parent_reply_id ?? null;
+    const idempotencyKey = replyHeaders.parse({ "idempotency-key": c.req.header("idempotency-key") })["idempotency-key"] ?? null;
+    // A single statement checks both targets and inserts, so deleting a parent
+    // concurrently cannot leave an orphan or create a cross-message reply.
+    const result = await c.env.DB.prepare(`INSERT INTO replies(message_id,user_id,body,parent_reply_id,idempotency_key)
+      SELECT id,?,?,?,? FROM messages WHERE id=? AND (? IS NULL OR EXISTS (
+        SELECT 1 FROM replies WHERE id=? AND message_id=messages.id
+      )) ON CONFLICT(user_id,idempotency_key) DO NOTHING
+      RETURNING id,message_id,user_id,body,created_at,parent_reply_id,direct_reply_count`)
+      .bind(session.user_id, input.body, parentId, idempotencyKey, input.message_id, parentId, parentId).first<z.infer<typeof Reply>>();
+    if (!result) {
+      if (idempotencyKey) {
+        const existing = await c.env.DB.prepare(`SELECT id,message_id,user_id,body,created_at,parent_reply_id,direct_reply_count
+          FROM replies WHERE user_id=? AND idempotency_key=?`).bind(session.user_id, idempotencyKey).first<z.infer<typeof Reply>>();
+        if (existing) {
+          if (existing.message_id !== input.message_id || existing.parent_reply_id !== parentId || existing.body !== input.body) {
+            throw new ApiError(409, "idempotency_conflict");
+          }
+          return c.json({ data: [existing] }, 201);
+        }
+      }
+      throw new ApiError(404, "not_found");
+    }
     await notifyReply(c.env, result.id);
     return c.json({ data: [result] }, 201);
   });
