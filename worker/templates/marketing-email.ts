@@ -16,7 +16,7 @@ export function renderMarketingEmail(subject: string, message: string, recipient
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;table-layout:fixed;">
     <tr><td align="center" style="padding:24px 16px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;table-layout:fixed;border-collapse:collapse;">
-        <tr><td style="padding:16px 0 24px;"><a href="https://yapern.com" style="display:inline-block;padding:12px 0;color:#f2f2fb;font-size:24px;font-weight:700;text-decoration:none;">Yapern</a></td></tr>
+        <tr><td style="padding:16px 0 24px;"><a href="https://yapern.com" style="display:inline-block;padding:12px 0;color:#f2f2fb;font-size:24px;font-weight:700;text-decoration:none;"><img src="https://yapern.com/images/logo.png" alt="" width="40" height="40" style="display:inline-block;width:40px;height:40px;margin:0 8px 0 0;border:0;vertical-align:middle;">Yapern</a></td></tr>
         <tr><td style="padding:24px 0;overflow-wrap:anywhere;word-break:break-word;">
           <h1 style="margin:0 0 24px;font-size:24px;line-height:1.3;">${title}</h1>
           <div style="color:#f2f2fb;font-size:16px;line-height:1.6;">${content}</div>
