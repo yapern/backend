@@ -50,6 +50,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "DELETE /auth/session",
     "DELETE /tables/messages",
     "DELETE /videos/{id}",
+    "GET /account/email-notifications",
     "GET /admin/tables",
     "GET /admin/tables/{table}",
     "GET /admin/users",
@@ -77,6 +78,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "HEAD /board-logos/{filename}",
     "HEAD /board-messages/{filename}",
     "HEAD /preview-images/{filename}",
+    "PATCH /account/email-notifications",
     "PATCH /tables/boards",
     "PATCH /tables/users",
     "POST /api/send-marketing-email",
@@ -130,7 +132,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
     "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
-    "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "Error", "LinkPreview", "LinkPreviewRequest",
+    "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "EmailNotificationPreferences", "Error", "LinkPreview", "LinkPreviewRequest",
     "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "MessageVideo", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
   assert.deepEqual(doc.tags, [
@@ -186,7 +188,7 @@ test("OpenAPI marks protected operations as authenticated and unsubscribe as pub
   const doc = await document();
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
-      const requiresSession = path.startsWith("/admin/") || path === "/api/get-marketing-users" || path.startsWith("/previews/") ||
+      const requiresSession = path.startsWith("/account/") || path.startsWith("/admin/") || path === "/api/get-marketing-users" || path.startsWith("/previews/") ||
         (path === "/notifications" || path === "/notifications/read" || path === "/notifications/ticket") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
           !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/") &&

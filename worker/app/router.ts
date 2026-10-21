@@ -18,6 +18,7 @@ import { registerReplyPageRoutes } from "./reply-pages";
 import { registerAdminRoutes } from "./admin";
 import { registerMarketingEmailRoutes } from "./marketing-email";
 import { registerVideoRoutes } from "./message-videos";
+import { deliverEmailNotifications, registerEmailNotificationRoutes } from "./email-notifications";
 import { limitBody } from "../shared/body-limit";
 
 export const app = new OpenAPIHono<ApiEnv>({
@@ -40,7 +41,7 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/videos", "/videos/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
+for (const path of ["/auth/email", "/auth/session", "/account/*", "/tables/*", "/messages/*", "/videos", "/videos/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
   // Forms hosted by this API submit from its own origin.
   const isAllowed = (origin: string, env: Env, requestUrl: string) => allowedOrigins(env).includes(origin) ||
     (path === "/unsubscribe" && origin === new URL(requestUrl).origin);
@@ -75,6 +76,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
   description: "The token returned by Yapern email sign-in. The legacy apikey header is optional and grants no access.",
 });
 registerAuthRoutes(app);
+registerEmailNotificationRoutes(app);
 registerDataRoutes(app);
 registerReplyPageRoutes(app);
 registerSearchRoutes(app);
@@ -143,8 +145,16 @@ app.onError((error, c) => {
   return c.json({ error: "internal_error" }, 500);
 });
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
-  return app.fetch(request, env);
+export async function handleRequest(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  const response = await app.fetch(request, env, ctx);
+  const path = new URL(request.url).pathname;
+  if (response.ok && ((request.method === "POST" && ["/tables/messages", "/tables/replies"].includes(path)) ||
+      (request.method === "PUT" && path === "/votes"))) {
+    const delivery = deliverEmailNotifications(env);
+    if (ctx) ctx.waitUntil(delivery);
+    else await delivery;
+  }
+  return response;
 }
 
 async function handleState(request: Request, env: Env): Promise<Response> {

@@ -20,6 +20,7 @@ API routes:
 | POST | `/auth/email` | Sign in, or create a new email account |
 | GET | `/auth/session` | Read the signed-in session |
 | DELETE | `/auth/session` | Revoke this session |
+| GET / PATCH | `/account/email-notifications` | Read or save your three private email notification preferences |
 | GET | `/admin/users` | Admin-only safe user profiles, newest first |
 | GET | `/admin/users/:userId` | Admin-only user profile detail |
 | GET | `/admin/tables` | Admin-only catalog of available tables and columns |
@@ -56,6 +57,38 @@ API routes:
 | POST | `/og-image` | Read link metadata or queue a screenshot |
 | GET | `/previews/{id}` | Read your screenshot job status |
 | GET, HEAD | `/preview-images/{id}.jpg` | Read a public cached screenshot |
+
+## Email notifications
+
+Apply `017_email_notifications.sql` before deploying the Worker and account UI.
+Existing and new users default to `true` for `email_notify_replies`,
+`email_notify_votes`, and `email_notify_sub_yap_messages`. The private
+`GET /account/email-notifications` route returns these three JSON booleans;
+`PATCH` requires all three booleans and updates only the bearer session's user.
+Public profiles still expose only ID and name.
+
+Replies email the author of the message or immediate parent reply. Upvotes and
+downvotes email the author of the voted message or reply; unchanged votes,
+removals, and self-actions do not send emails. A new message (text, image, or
+video) emails each prior message/reply author in its sub-yap once, excluding the
+poster. Participation is backfilled from existing content and retained after
+content deletion. Historical events do not generate emails during migration.
+
+Database triggers queue events atomically with posts and votes. The Worker
+processes up to 20 queued emails in the background after a successful event;
+the existing five-minute schedule also drains the queue and retries failures
+with backoff. Atomic five-minute claims prevent concurrent drains from sending
+the same job. Delivery is at least once: a process interrupted after provider
+acceptance but before recording completion can retry that email.
+
+Emails use `Yapern <hello@yapern.com>` through the existing `MARKETING_EMAIL`
+binding and branded template, with links to the message/reply and the existing
+unsubscribe flow. The sender domain must be configured for Email Sending.
+Each send rechecks the current event preference and both global marketing
+opt-outs; saving an event preference does not undo an unsubscribe. Email
+failures do not fail a committed post or vote. Completed jobs expire after
+30 days. Run `node --import tsx --test worker/app/email-notifications.test.ts`
+for focused checks.
 
 ## Message videos
 

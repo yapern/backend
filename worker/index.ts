@@ -4,6 +4,7 @@ import { cleanupPreviews, consumePreviews } from "./app/preview-jobs";
 import { UserNotifications } from "./durable-objects/user-notifications";
 import { retryNotificationDelivery } from "./app/notifications";
 import { maintainVideos } from "./app/message-videos";
+import { deliverEmailNotifications } from "./app/email-notifications";
 
 export { AppState, UserNotifications };
 
@@ -15,6 +16,7 @@ export default {
   scheduled(_event, env, ctx) {
     ctx.waitUntil(cleanupPreviews(env));
     ctx.waitUntil(retryNotificationDelivery(env));
+    ctx.waitUntil(deliverEmailNotifications(env));
     ctx.waitUntil(maintainVideos(env));
   },
 } satisfies ExportedHandler<Env>;
