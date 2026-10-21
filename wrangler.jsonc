@@ -9,6 +9,10 @@
   },
   "vars": {
   },
+  "stream": {
+    "binding": "STREAM",
+    "remote": true
+  },
   "send_email": [
     { "name": "MARKETING_EMAIL" }
   ],

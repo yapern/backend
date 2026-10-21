@@ -7,12 +7,52 @@ import { createTestDatabase } from "../testing/database";
 
 const apiOrigin = "https://api.yapern.com";
 const streamOrigin = "https://customer-testing.cloudflarestream.com";
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, native = false) {
   const database = createTestDatabase();
   t.after(() => database.close());
-  const env = { DB: database.db, STREAM_ACCOUNT_ID: "a".repeat(32), STREAM_API_TOKEN: "private-token", STREAM_WEBHOOK_SECRET: "webhook-secret" } as Env;
+  const env = { DB: database.db, STREAM_ACCOUNT_ID: "a".repeat(32), STREAM_API_TOKEN: "private-token", STREAM_WEBHOOK_SECRET: "webhook-secret" } as unknown as Env;
   const assets = new Map<string, Record<string, unknown>>();
   const provider = { failed: false, deleteFailed: false, calls: 0, creates: 0, gets: 0, location: "" };
+  const binding = { failed: false, deleteFailed: false, createCalls: 0, detailsCalls: 0, deleteCalls: 0,
+    uploadUrl: "", invalidId: false, assets: new Map<string, StreamVideo>() };
+  if (native) {
+    env.STREAM = {
+      async createDirectUpload(options: StreamDirectUploadCreateParams) {
+        binding.createCalls++;
+        assert.equal(options.maxDurationSeconds, 120);
+        assert.ok(Date.parse(options.expiry!) > Date.now());
+        assert.ok(options.creator);
+        assert.ok(options.meta?.name);
+        if (binding.failed) throw new Error("provider credentials leaked");
+        const id = binding.invalidId ? "unsafe-id" : (binding.createCalls + 100).toString(16).padStart(32, "0");
+        const uploadURL = binding.uploadUrl || `https://upload.cloudflarestream.com/${id}`;
+        binding.assets.set(id, { id, creator: options.creator!, thumbnail: "", thumbnailTimestampPct: 0, readyToStream: false,
+          readyToStreamAt: null, status: { state: "pendingupload", errorReasonCode: "", errorReasonText: "" }, meta: options.meta!,
+          created: new Date().toISOString(), modified: new Date().toISOString(), scheduledDeletion: null, size: 0, allowedOrigins: [],
+          requireSignedURLs: false, uploaded: null, uploadExpiry: options.expiry!, maxSizeBytes: null,
+          maxDurationSeconds: options.maxDurationSeconds, duration: -1, input: { width: 0, height: 0 },
+          hlsPlaybackUrl: `https://customer-testing.cloudflarestream.com/${id}/manifest/video.m3u8`,
+          dashPlaybackUrl: "", watermark: null, liveInputId: null, clippedFromId: null, publicDetails: null });
+        return { id, uploadURL };
+      },
+      video(id: string) {
+        return {
+          async details() {
+            binding.detailsCalls++;
+            if (binding.failed) throw new Error("provider details failed");
+            const asset = binding.assets.get(id);
+            if (!asset) throw Object.assign(new Error("not found"), { statusCode: 404 });
+            return asset;
+          },
+          async delete() {
+            binding.deleteCalls++;
+            if (binding.deleteFailed) throw new Error("provider delete failed");
+            if (!binding.assets.delete(id)) throw Object.assign(new Error("not found"), { statusCode: 404 });
+          },
+        };
+      },
+    } as unknown as StreamBinding;
+  }
   t.mock.method(globalThis, "fetch", async (value: string, options: RequestInit) => {
     provider.calls++;
     assert.equal(options.redirect, "error");
@@ -55,7 +95,7 @@ async function fixture(t: TestContext) {
   async function upload() {
     const response = await reserve();
     assert.equal(response.status, 201, await response.clone().text());
-    const { data } = await response.json() as { data: { id: string; upload_url: string } };
+    const { data } = await response.json() as { data: { id: string; upload_url: string; upload_protocol: "multipart" | "tus" } };
     const row = database.sqlite.prepare("SELECT * FROM message_videos WHERE id=?").get(data.id)!;
     return { ...data, uid: String(row.stream_uid) };
   }
@@ -73,7 +113,7 @@ async function fixture(t: TestContext) {
     const sig = createHmac("sha256", env.STREAM_WEBHOOK_SECRET!).update(`${time}.${body}`).digest("hex");
     return request("/stream/webhook", { method: "POST", headers: { "content-type": "application/json", "webhook-signature": `time=${time},sig1=${sig}` }, body });
   };
-  return { database, env, assets, provider, request, headers, owner, signIn, reserve, upload, source, complete, post, webhook };
+  return { database, env, assets, provider, binding, request, headers, owner, signIn, reserve, upload, source, complete, post, webhook };
 }
 
 test("reserves constrained TUS uploads without exposing credentials and enforces auth, CORS and quotas", async t => {
@@ -84,6 +124,7 @@ test("reserves constrained TUS uploads without exposing credentials and enforces
   assert.equal((await api.reserve({ board_id: "general", size_bytes: VIDEO_LIMITS.bytes + 1 })).status, 400);
   for (let i = 0; i < VIDEO_LIMITS.pendingPerUser; i++) {
     const upload = await api.upload();
+    assert.equal(upload.upload_protocol, "tus");
     assert.ok(upload.upload_url.startsWith("https://upload.videodelivery.net/"));
     assert.ok(!JSON.stringify(upload).includes("private-token"));
   }
@@ -92,6 +133,107 @@ test("reserves constrained TUS uploads without exposing credentials and enforces
   api.database.sqlite.exec("UPDATE message_videos SET state='deleting'; UPDATE video_daily_usage SET uploads=20");
   assert.equal((await api.reserve()).status, 429);
   assert.equal(api.provider.creates, 3);
+});
+
+test("native Stream binding creates multipart uploads and normalizes pending and ready metadata", async t => {
+  const api = await fixture(t, true);
+  api.env.STREAM_ACCOUNT_ID = undefined;
+  api.env.STREAM_API_TOKEN = undefined;
+  const upload = await api.upload();
+  assert.equal(upload.upload_protocol, "multipart");
+  assert.ok(upload.upload_url.startsWith("https://upload.cloudflarestream.com/"));
+  assert.equal(api.provider.calls, 0);
+  assert.equal(api.binding.createCalls, 1);
+  assert.equal(api.database.sqlite.prepare("SELECT stream_uid FROM message_videos WHERE id=?").get(upload.id)!.stream_uid, upload.uid);
+
+  assert.equal((await api.complete(upload.id)).status, 200);
+  let status = (await (await api.request(`/videos/${upload.id}`, { headers: api.headers })).json() as {
+    data: { status: string; duration: number | null; width: number | null } }).data;
+  assert.equal(status.status, "uploading");
+  assert.equal(status.duration, null);
+  assert.equal(status.width, null);
+  const asset = api.binding.assets.get(upload.uid)!;
+  Object.assign(asset, { readyToStream: true, status: { state: "ready", errorReasonCode: "", errorReasonText: "" },
+    size: 2048, duration: 31, input: { width: 1920, height: 1080 } });
+  api.database.sqlite.prepare("UPDATE message_videos SET checked_at=0 WHERE id=?").run(upload.id);
+  const ready = await api.complete(upload.id);
+  assert.equal(ready.status, 200);
+  status = (await ready.json() as { data: typeof status }).data;
+  assert.equal(status.status, "ready");
+  assert.equal(status.duration, 31);
+  assert.equal(status.width, 1920);
+  assert.equal((await api.post(upload.id)).status, 201);
+  assert.equal(api.provider.calls, 0);
+  assert.equal(api.binding.detailsCalls, 2);
+});
+
+test("native Stream errors are sanitized and cleanup retries handle failure and missing assets", async t => {
+  t.mock.method(console, "warn", () => {});
+  const api = await fixture(t, true);
+  api.binding.failed = true;
+  const failedCreate = await api.reserve();
+  assert.equal(failedCreate.status, 502);
+  assert.equal(api.database.sqlite.prepare("SELECT count(*) AS n FROM message_videos").get()!.n, 0);
+  api.binding.failed = false;
+
+  api.binding.uploadUrl = "https://evil.example/upload";
+  assert.equal((await api.reserve()).status, 502);
+  assert.equal(api.binding.assets.size, 0);
+  api.binding.uploadUrl = "";
+
+  const upload = await api.upload();
+  api.binding.failed = true;
+  assert.equal((await api.complete(upload.id)).status, 502);
+  api.binding.failed = false;
+
+  api.binding.deleteFailed = true;
+  assert.equal((await api.request(`/videos/${upload.id}`, { method: "DELETE", headers: api.headers })).status, 200);
+  assert.equal(api.database.sqlite.prepare("SELECT state FROM message_videos WHERE id=?").get(upload.id)!.state, "deleting");
+  api.binding.deleteFailed = false;
+  await maintainVideos(api.env);
+  assert.equal(api.database.sqlite.prepare("SELECT count(*) AS n FROM message_videos").get()!.n, 0);
+
+  const missing = await api.upload();
+  api.binding.assets.delete(missing.uid);
+  assert.equal((await api.request(`/videos/${missing.id}`, { method: "DELETE", headers: api.headers })).status, 200);
+  assert.equal(api.database.sqlite.prepare("SELECT count(*) AS n FROM message_videos WHERE id=?").get(missing.id)!.n, 0);
+});
+
+test("native uploads enforce reservation quotas and reject oversized processed videos", async t => {
+  const api = await fixture(t, true);
+  assert.equal((await api.reserve({ board_id: "general", size_bytes: VIDEO_LIMITS.bytes + 1 })).status, 400);
+  const uploads = [];
+  for (let i = 0; i < VIDEO_LIMITS.pendingPerUser; i++) uploads.push(await api.upload());
+  assert.equal((await api.reserve()).status, 429);
+  assert.equal(api.binding.createCalls, VIDEO_LIMITS.pendingPerUser);
+
+  const asset = api.binding.assets.get(uploads[0].uid)!;
+  Object.assign(asset, { readyToStream: true, status: { state: "ready", errorReasonCode: "", errorReasonText: "" },
+    size: VIDEO_LIMITS.bytes + 1, duration: 30, input: { width: 640, height: 480 } });
+  api.database.sqlite.prepare("UPDATE message_videos SET checked_at=0 WHERE id=?").run(uploads[0].id);
+  assert.equal((await api.complete(uploads[0].id)).status, 200);
+  assert.equal(api.database.sqlite.prepare("SELECT state,error FROM message_videos WHERE id=?").get(uploads[0].id)!.error,
+    "video_limit_exceeded");
+  await maintainVideos(api.env);
+  assert.equal(api.binding.assets.has(uploads[0].uid), false);
+});
+
+test("native Stream rejects malformed asset IDs and cleans up assets after unsafe upload URLs", async t => {
+  const api = await fixture(t, true);
+  api.binding.invalidId = true;
+  assert.equal((await api.reserve()).status, 502);
+  assert.equal(api.database.sqlite.prepare("SELECT stream_uid FROM message_videos").get(), undefined);
+  api.binding.assets.clear();
+  api.binding.invalidId = false;
+  for (const uploadUrl of [
+    "https://upload.cloudflarestream.com.evil.example/upload",
+    "https://user@upload.cloudflarestream.com/upload",
+    "http://upload.cloudflarestream.com/upload",
+  ]) {
+    api.binding.uploadUrl = uploadUrl;
+    assert.equal((await api.reserve()).status, 502, uploadUrl);
+    assert.equal(api.binding.assets.size, 0, uploadUrl);
+  }
 });
 
 test("only trusted processing state can be attached; message retries, projections and public playback work", async t => {

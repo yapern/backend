@@ -34,6 +34,10 @@ API routes:
 | GET / HEAD | `/board-logos/:filename` | Read a public board logo from R2 |
 | GET | `/tables/messages` | Read messages |
 | POST | `/tables/messages` | Create a titled message |
+| POST | `/videos` | Reserve a direct Stream video upload |
+| GET | `/videos/:id` | Read upload or processing status |
+| POST | `/videos/:id/complete` | Confirm upload and processing status |
+| DELETE | `/videos/:id` | Cancel an unattached upload |
 | GET / HEAD | `/board-messages/:filename` | Read a public message image from R2 |
 | DELETE | `/tables/messages` | Delete your message and its replies |
 | GET | `/tables/replies` | Read replies |
@@ -52,6 +56,41 @@ API routes:
 | POST | `/og-image` | Read link metadata or queue a screenshot |
 | GET | `/previews/{id}` | Read your screenshot job status |
 | GET, HEAD | `/preview-images/{id}.jpg` | Read a public cached screenshot |
+
+## Message videos
+
+Video uploads use the Cloudflare Stream binding configured as `STREAM` in
+`wrangler.jsonc`. Deploy using Wrangler's OAuth login; the binding authorizes
+Stream access at runtime without an API token:
+
+```sh
+npx wrangler login
+npm run deploy
+```
+
+The binding creates one-time multipart upload URLs. The API returns
+`upload_protocol: "multipart"`; clients send the video in a multipart form
+request to `upload_url`, then call `POST /videos/{id}/complete`. Direct uploads
+are limited to 100 MiB and 120 seconds, with 20 reservations per user per UTC
+day and three pending uploads per user. The API checks processed size and
+duration, and removes videos that exceed these limits. Videos in public messages are
+public. Never send the application bearer token to the upload URL.
+
+The backend also retains its REST/TUS upload path for deployments without the
+binding. That fallback requires `STREAM_ACCOUNT_ID` and a token with **Stream:
+Edit** permission for account `68ab2c0024004b185de3f28fd003736f`. Store the token
+as the `STREAM_API_TOKEN` Worker secret. Locally, Wrangler reads these values
+from its ignored `.dev.vars` file:
+
+```dotenv
+STREAM_ACCOUNT_ID=68ab2c0024004b185de3f28fd003736f
+STREAM_API_TOKEN=your-token
+```
+
+The optional Stream webhook can update processing state promptly. Configure
+its URL as `https://api.yapern.com/stream/webhook` and set the matching signing
+secret with `npx wrangler secret put STREAM_WEBHOOK_SECRET`. Periodic Worker
+maintenance and status reads also refresh processing state without the webhook.
 
 ## Admin and marketing email
 

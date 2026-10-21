@@ -34,11 +34,19 @@ const providerVideo = z.object({
   playback: z.object({ hls: z.string().optional() }).optional(),
 });
 
+function hasRestConfig(env: Env) {
+  return !!env.STREAM_ACCOUNT_ID && /^[a-f0-9]{32}$/.test(env.STREAM_ACCOUNT_ID) && !!env.STREAM_API_TOKEN;
+}
+
 function config(env: Env) {
-  if (!env.STREAM_ACCOUNT_ID || !/^[a-f0-9]{32}$/.test(env.STREAM_ACCOUNT_ID) || !env.STREAM_API_TOKEN) {
+  if (!hasRestConfig(env)) {
     throw new ApiError(503, "video_uploads_unavailable");
   }
   return { url: `https://api.cloudflare.com/client/v4/accounts/${env.STREAM_ACCOUNT_ID}/stream`, token: env.STREAM_API_TOKEN };
+}
+
+function assertConfigured(env: Env) {
+  if (!env.STREAM && !hasRestConfig(env)) throw new ApiError(503, "video_uploads_unavailable");
 }
 
 async function streamRequest(env: Env, path: string, init: RequestInit = {}) {
@@ -49,6 +57,42 @@ async function streamRequest(env: Env, path: string, init: RequestInit = {}) {
       redirect: "error", signal: AbortSignal.timeout(VIDEO_LIMITS.requestMs),
     });
   } catch { throw new ApiError(502, "video_service_unavailable"); }
+}
+
+function isStreamNotFound(error: unknown): boolean {
+  return !!error && typeof error === "object" && "statusCode" in error && error.statusCode === 404;
+}
+
+function normalizeBoundVideo(video: StreamVideo) {
+  return {
+    uid: video.id,
+    status: { state: video.status.state, errorReasonCode: video.status.errorReasonCode || undefined },
+    readyToStream: video.readyToStream,
+    ...(video.size > 0 ? { size: video.size } : {}),
+    ...(video.duration >= 0 ? { duration: video.duration } : {}),
+    ...(video.input.width > 0 && video.input.height > 0 ? { input: video.input } : {}),
+    ...(video.hlsPlaybackUrl ? { playback: { hls: video.hlsPlaybackUrl } } : {}),
+  };
+}
+
+async function directUpload(env: Env, options: StreamDirectUploadCreateParams, sizeBytes: number) {
+  if (env.STREAM) {
+    try { return { ...await env.STREAM.createDirectUpload(options), upload_protocol: "multipart" as const }; }
+    catch { throw new ApiError(502, "video_service_unavailable"); }
+  }
+  const metadata = {
+    maxDurationSeconds: String(options.maxDurationSeconds),
+    expiry: options.expiry!,
+    name: options.meta!.name,
+  };
+  const response = await streamRequest(env, "?direct_user=true", { method: "POST", headers: {
+    "tus-resumable": "1.0.0", "upload-length": String(sizeBytes),
+    "upload-creator": options.creator!,
+    "upload-metadata": Object.entries(metadata).map(([key, value]) => `${key} ${Buffer.from(value).toString("base64")}`).join(","),
+  } });
+  const uid = response.headers.get("stream-media-id"), location = response.headers.get("location");
+  if (!response.ok || !uid || !uidPattern.test(uid) || !location) throw new ApiError(502, "video_service_unavailable");
+  return { id: uid, uploadURL: location, upload_protocol: "tus" as const };
 }
 
 function videoResult(row: VideoRow): z.infer<typeof MessageVideo> {
@@ -113,6 +157,20 @@ async function refreshVideo(env: Env, row: VideoRow, force = false) {
     AND state IN ('uploading','processing') RETURNING id`)
     .bind(Date.now(), row.id, Date.now() - (force ? 0 : VIDEO_LIMITS.refreshMs)).first();
   if (!claim) return;
+  if (env.STREAM) {
+    let video: StreamVideo;
+    try { video = await env.STREAM.video(row.stream_uid).details(); }
+    catch (error) {
+      if (isStreamNotFound(error)) {
+        await env.DB.prepare("UPDATE message_videos SET state='failed',error='video_unavailable',stream_uid=NULL WHERE id=? AND state IN ('uploading','processing')")
+          .bind(row.id).run();
+        return;
+      }
+      throw new ApiError(502, "video_service_unavailable");
+    }
+    await applyProviderVideo(env, row, normalizeBoundVideo(video));
+    return;
+  }
   const response = await streamRequest(env, `/${row.stream_uid}`);
   if (response.status === 404) {
     await env.DB.prepare("UPDATE message_videos SET state='failed',error='video_unavailable',stream_uid=NULL WHERE id=? AND state IN ('uploading','processing')")
@@ -130,8 +188,13 @@ export async function deleteVideoAsset(env: Env, id: string): Promise<void> {
   if (!row || !["deleting", "failed"].includes(row.state)) return;
   try {
     if (row.stream_uid) {
-      const response = await streamRequest(env, `/${row.stream_uid}`, { method: "DELETE" });
-      if (!response.ok && response.status !== 404) throw new ApiError(502, "video_service_unavailable");
+      if (env.STREAM) {
+        try { await env.STREAM.video(row.stream_uid).delete(); }
+        catch (error) { if (!isStreamNotFound(error)) throw error; }
+      } else {
+        const response = await streamRequest(env, `/${row.stream_uid}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) throw new ApiError(502, "video_service_unavailable");
+      }
     }
     if (row.state === "deleting") await env.DB.prepare("DELETE FROM message_videos WHERE id=? AND state='deleting'").bind(id).run();
     else await env.DB.prepare("UPDATE message_videos SET stream_uid=NULL WHERE id=? AND state='failed'").bind(id).run();
@@ -169,7 +232,7 @@ export async function createVideoMessage(env: Env, userId: string, input: { atta
 }
 
 export async function maintainVideos(env: Env): Promise<void> {
-  if (!env.STREAM_ACCOUNT_ID || !env.STREAM_API_TOKEN) return;
+  if (!env.STREAM && !hasRestConfig(env)) return;
   const now = Date.now();
   await env.DB.prepare(`UPDATE message_videos SET state='deleting' WHERE message_id IS NULL AND created_at<?`)
     .bind(now - VIDEO_LIMITS.abandonedMs).run();
@@ -203,14 +266,14 @@ export function registerVideoRoutes(app: Api): void {
   }).strict().openapi("CreateVideoUpload");
   registerRoute(app, {
     method: "post", path: "/videos", operationId: "createVideoUpload", tags: ["Messages"],
-    summary: "Reserve a direct resumable video upload", security: protectedSecurity,
-    description: "Returns a one-time TUS URL. Upload bytes directly to Stream, then POST /videos/{id}/complete. Maximum 100 MiB, 120 seconds, 20 reservations per UTC day and 3 pending uploads per user. Videos in public messages are public. Never send the application bearer token to the upload URL.",
+    summary: "Reserve a direct video upload", security: protectedSecurity,
+    description: "Returns a one-time direct upload URL and protocol. Upload bytes directly to Stream, then POST /videos/{id}/complete. Maximum 100 MiB, 120 seconds, 20 reservations per UTC day and 3 pending uploads per user. Videos in public messages are public. Never send the application bearer token to the upload URL.",
     request: { body: { required: true, content: jsonContent(uploadInput) } },
-    responses: { ...errors, 201: jsonResult(z.object({ data: z.object({ id: z.string(), upload_url: z.string(), expires_at: z.string(), max_duration_seconds: z.number() }) }), "Upload reserved.") },
+    responses: { ...errors, 201: jsonResult(z.object({ data: z.object({ id: z.string(), upload_url: z.string(), upload_protocol: z.enum(["multipart", "tus"]), expires_at: z.string(), max_duration_seconds: z.number() }) }), "Upload reserved.") },
   }, async c => {
     const session = await requireSession(c.req.raw, c.env);
     const input = uploadInput.parse(await c.req.json());
-    config(c.env);
+    assertConfigured(c.env);
     if (!await c.env.DB.prepare("SELECT id FROM boards WHERE id=?").bind(input.board_id).first()) throw new ApiError(404, "not_found");
     const id = randomUUID(), now = Date.now(), expires = now + VIDEO_LIMITS.uploadMs, day = new Date(now).toISOString().slice(0, 10);
     const [insert] = await c.env.DB.batch([
@@ -225,20 +288,20 @@ export function registerVideoRoutes(app: Api): void {
     ]);
     if (!insert.meta.changes) throw new ApiError(429, "video_upload_limit");
     try {
-      const metadata = { maxDurationSeconds: String(VIDEO_LIMITS.seconds), expiry: new Date(expires).toISOString(), name: id };
-      const response = await streamRequest(c.env, "?direct_user=true", { method: "POST", headers: {
-        "tus-resumable": "1.0.0", "upload-length": String(input.size_bytes), "upload-creator": session.user_id,
-        "upload-metadata": Object.entries(metadata).map(([key, value]) => `${key} ${Buffer.from(value).toString("base64")}`).join(","),
-      } });
-      const uid = response.headers.get("stream-media-id"), location = response.headers.get("location");
-      if (!response.ok || !uid || !uidPattern.test(uid) || !location) throw new ApiError(502, "video_service_unavailable");
+      const upload = await directUpload(c.env, {
+        maxDurationSeconds: VIDEO_LIMITS.seconds, expiry: new Date(expires).toISOString(),
+        creator: session.user_id, meta: { name: id },
+      }, input.size_bytes);
+      const uid = upload.id;
+      if (!uid || !uidPattern.test(uid)) throw new ApiError(502, "video_service_unavailable");
       // Record the identity before parsing the location so invalid responses can still be cleaned up.
       await c.env.DB.prepare("UPDATE message_videos SET stream_uid=? WHERE id=?").bind(uid, id).run();
-      const url = new URL(location);
-      if (url.protocol !== "https:" || url.hostname !== "upload.videodelivery.net" || url.username || url.password || url.port || url.hash) {
+      const url = new URL(upload.uploadURL);
+      if (url.protocol !== "https:" || !["upload.cloudflarestream.com", "upload.videodelivery.net"].includes(url.hostname) ||
+        url.username || url.password || url.port || url.hash) {
         throw new ApiError(502, "invalid_video_response");
       }
-      return c.json({ data: { id, upload_url: url.href, expires_at: new Date(expires).toISOString(), max_duration_seconds: VIDEO_LIMITS.seconds } }, 201);
+      return c.json({ data: { id, upload_url: url.href, upload_protocol: upload.upload_protocol, expires_at: new Date(expires).toISOString(), max_duration_seconds: VIDEO_LIMITS.seconds } }, 201);
     } catch (error) {
       await c.env.DB.prepare("UPDATE message_videos SET state='deleting' WHERE id=?").bind(id).run();
       await deleteVideoAsset(c.env, id);
