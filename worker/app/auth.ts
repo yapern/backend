@@ -3,6 +3,7 @@ import { z } from "@hono/zod-openapi";
 import { ApiError, protectedSecurity } from "./contracts";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
 import { ADMIN_EMAIL } from "../shared/admin";
+import { MarketingEmailPreferenceError, sendMarketingEmail } from "../lib/marketing-email";
 
 const TOKEN_PATTERN = /^bff_us_[a-f0-9]{64}$/;
 const SESSION_DAYS = 30;
@@ -183,6 +184,28 @@ export function registerAuthRoutes(app: Api): void {
       if (!created && !await verifyPassword(password, row)) throw new ApiError(401, "invalid_credentials");
     }
     const result = await issueSession(db, row, created);
+    if (created) {
+      try {
+        await sendMarketingEmail(c.env, {
+          to: row.email,
+          from: "andrew@yapern.com",
+          subj: "Thanks for yapping on yapern! 💥",
+          message: `Real quick and I'll get out of your inbox.
+
+My name is Andrew, founder of the yapern and we will jump over backwards here to make you a happy customer.
+
+Please let me know personally if there is anything confusing or hard to use.
+
+Best,
+-aa`,
+        });
+      } catch (error) {
+        if (!(error instanceof MarketingEmailPreferenceError && error.message === "recipient_unsubscribed")) {
+          const code = error instanceof Error && "code" in error ? error.code : undefined;
+          console.error("welcome_email_send_failed", code);
+        }
+      }
+    }
     return c.json(result, created ? 201 : 200);
   });
 

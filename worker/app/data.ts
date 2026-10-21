@@ -5,6 +5,7 @@ import { ApiError, protectedSecurity } from "./contracts";
 import { deleteBoardLogo, storeBoardLogo } from "./board-logos";
 import { deleteBoardImage, storeBoardImage } from "./board-images";
 import { notifyReply, publishNotifications } from "./notifications";
+import { createVideoMessage, deleteVideoAsset, MessageVideo, messageVideos } from "./message-videos";
 
 const identifier = z.string().trim().min(1).max(512);
 const name = z.string().trim().min(1).max(80);
@@ -27,6 +28,7 @@ const Board = z.object({
 const Message = z.object({
   id: z.string(), board_id: z.string(), user_id: z.string(), title: z.string(),
   body: z.string(), created_at: z.string(), image_url: z.string().nullable(),
+  video: MessageVideo.nullable().optional(),
   reply_count: z.number().int().nonnegative().openapi({ description: "Stored reply total, maintained atomically by database triggers." }),
 }).openapi("Message");
 export const Reply = z.object({
@@ -53,6 +55,9 @@ const messageImageInput = messageInput.extend({
   body: messageBody.max(2000).default(""),
   image: z.instanceof(File).openapi({ type: "string", format: "binary" }),
 }).openapi("CreateMessageImage");
+const messageVideoInput = messageInput.extend({
+  body: messageBody.max(2000).default(""), attachment_id: z.uuid(),
+}).openapi("CreateMessageVideo");
 const replyInput = z.object({
   ...ownerInput, message_id: identifier, body, parent_reply_id: identifier.nullable().optional(),
 }).strict().openapi("CreateReply");
@@ -93,7 +98,7 @@ type Collection = {
 // a table, column, operator, or SQL expression without an allowlist check.
 const collections: Collection[] = [
   { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id", "logo_url"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
-  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url", "reply_count"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
+  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url", "reply_count", "video"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
   { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at", "parent_reply_id", "direct_reply_count"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
   { table: "users", fields: ["id", "name"], filters: ["id"], query: profileQuery, schema: Profile, tag: "Profiles", order: "id.asc" },
 ];
@@ -157,8 +162,10 @@ export function registerDataRoutes(app: Api): void {
       },
     }, async c => {
       const query = collection.query.parse(queryValues(c.req.url)) as Record<string, string | undefined>;
-      const fields = selectFields(query.select, collection.fields);
-      const order = orderFields(query.order ?? collection.order, collection.fields);
+      const selected = selectFields(query.select, collection.fields).split(",");
+      const withVideo = collection.table === "messages" && selected.includes("video");
+      const fields = selected.map(field => field === "video" ? "id AS __video_message_id" : field).join(",");
+      const order = orderFields(query.order ?? collection.order, collection.fields.filter(field => field !== "video"));
       const conditions: string[] = [];
       const parameters: (string | number)[] = [];
       for (const column of collection.filters) {
@@ -170,7 +177,9 @@ export function registerDataRoutes(app: Api): void {
       parameters.push(Number(query.limit), Number(query.offset));
       const result = await c.env.DB.prepare(`SELECT ${fields} FROM ${collection.table}${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""} ORDER BY ${order} LIMIT ? OFFSET ?`)
         .bind(...parameters).all();
-      return c.json({ data: result.results });
+      if (!withVideo) return c.json({ data: result.results });
+      const videos = await messageVideos(c.env, result.results.map(row => String(row.__video_message_id)));
+      return c.json({ data: result.results.map(({ __video_message_id, ...row }) => ({ ...row, video: videos.get(String(__video_message_id)) ?? null })) });
     });
   }
 
@@ -253,12 +262,13 @@ export function registerDataRoutes(app: Api): void {
   registerRoute(app, {
     method: "post", path: "/tables/messages", operationId: "createMessage",
     tags: ["Messages"], summary: "Post a message to a board", security: protectedSecurity,
-    description: "Send JSON for a text message, or multipart/form-data with board_id, title, optional body and an image file (PNG, JPEG, GIF, or WebP, at most 5 MiB). Uploaded images are stored under board-messages/ and prepended to the body as a public URL. The final body must fit within 2000 characters.",
+    description: "Send JSON for a text message, JSON with attachment_id for your completed Stream upload, or multipart/form-data with an image file (PNG, JPEG, GIF, or WebP, at most 5 MiB). Video uploads must belong to this user and board and be processing or ready. Media URLs are prepended to body for older clients; the final body must fit within 2000 characters. Retrying the same video and content returns its existing message.",
     request: { body: { content: {
-      ...jsonContent(messageInput), "multipart/form-data": { schema: messageImageInput },
+      ...jsonContent(z.union([messageInput, messageVideoInput])), "multipart/form-data": { schema: messageImageInput },
     } } },
     responses: {
       ...writeErrors, 201: jsonResult(rows(Message), "Created message."),
+      409: errorResult("The video is not ready, belongs to a different board/user, or has already been attached to different content."),
       413: errorResult("The image exceeds 5 MiB (request_too_large)."),
       415: errorResult("Unsupported file type or image signature (invalid_message_image)."),
       503: errorResult("Image storage is unavailable (image_storage_unavailable)."),
@@ -277,7 +287,13 @@ export function registerDataRoutes(app: Api): void {
       input = values;
       file = image;
     } else if (contentType === "application/json") {
-      input = messageInput.parse(await c.req.json());
+      const payload = await c.req.json();
+      if (payload && typeof payload === "object" && Object.hasOwn(payload, "attachment_id")) {
+        const videoInput = messageVideoInput.parse(payload);
+        checkOwner(videoInput.user_id, session.user_id);
+        return c.json({ data: [await createVideoMessage(c.env, session.user_id, videoInput)] }, 201);
+      }
+      input = messageInput.parse(payload);
     } else {
       throw new ApiError(415, "invalid_request");
     }
@@ -368,8 +384,9 @@ export function registerDataRoutes(app: Api): void {
     const query = deleteQuery.parse(queryValues(c.req.url));
     if (query.user_id !== undefined) checkOwner(equality(query.user_id), session.user_id);
     const id = equality(query.id);
-    const existing = await c.env.DB.prepare("SELECT board_id,user_id,image_url FROM messages WHERE id=?")
-      .bind(id).first<{ board_id: string; user_id: string; image_url: string | null }>();
+    const existing = await c.env.DB.prepare(`SELECT board_id,user_id,image_url,
+      (SELECT id FROM message_videos WHERE message_id=messages.id) AS video_id FROM messages WHERE id=?`)
+      .bind(id).first<{ board_id: string; user_id: string; image_url: string | null; video_id: string | null }>();
     if (!existing || (query.board_id !== undefined && equality(query.board_id) !== existing.board_id)) throw new ApiError(404, "not_found");
     checkOwner(existing.user_id, session.user_id);
     // A reply author can receive an upvote on their reply. Deleting the parent
@@ -383,6 +400,7 @@ export function registerDataRoutes(app: Api): void {
       .bind(id, session.user_id, existing.board_id).first<{ id: string }>();
     if (!result) throw new ApiError(404, "not_found");
     await deleteBoardImage(c.env, existing.image_url, "board-messages");
+    if (existing.video_id) await deleteVideoAsset(c.env, existing.video_id);
     for (const recipientId of new Set([existing.user_id, ...affected.results.map(row => row.user_id)])) {
       await publishNotifications(c.env, recipientId);
     }

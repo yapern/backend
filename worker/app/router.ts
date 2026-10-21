@@ -17,6 +17,8 @@ import { registerVoteRoutes } from "./votes";
 import { registerReplyPageRoutes } from "./reply-pages";
 import { registerAdminRoutes } from "./admin";
 import { registerMarketingEmailRoutes } from "./marketing-email";
+import { registerVideoRoutes } from "./message-videos";
+import { limitBody } from "../shared/body-limit";
 
 export const app = new OpenAPIHono<ApiEnv>({
   defaultHook: (result, c) => {
@@ -38,7 +40,7 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
+for (const path of ["/auth/email", "/auth/session", "/tables/*", "/messages/*", "/videos", "/videos/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
   // Forms hosted by this API submit from its own origin.
   const isAllowed = (origin: string, env: Env, requestUrl: string) => allowedOrigins(env).includes(origin) ||
     (path === "/unsubscribe" && origin === new URL(requestUrl).origin);
@@ -82,6 +84,8 @@ registerPreviewRoutes(app);
 registerNotificationRoutes(app);
 registerAdminRoutes(app);
 registerMarketingEmailRoutes(app);
+app.use("/stream/webhook", limitBody(16 * 1024));
+registerVideoRoutes(app);
 
 registerRoute(app, {
   method: "get", path: "/health", operationId: "getHealth",
