@@ -27,6 +27,7 @@ const Board = z.object({
 const Message = z.object({
   id: z.string(), board_id: z.string(), user_id: z.string(), title: z.string(),
   body: z.string(), created_at: z.string(), image_url: z.string().nullable(),
+  reply_count: z.number().int().nonnegative().openapi({ description: "Stored reply total, maintained atomically by database triggers." }),
 }).openapi("Message");
 const Reply = z.object({
   id: z.string(), message_id: z.string(), user_id: z.string(), body: z.string(), created_at: z.string(),
@@ -85,7 +86,7 @@ type Collection = {
 // a table, column, operator, or SQL expression without an allowlist check.
 const collections: Collection[] = [
   { table: "boards", fields: ["id", "slug", "name", "description", "created_at", "user_id", "logo_url"], filters: ["id", "slug", "user_id"], query: boardQuery, schema: Board, tag: "Boards", order: "slug.asc" },
-  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
+  { table: "messages", fields: ["id", "board_id", "user_id", "title", "body", "created_at", "image_url", "reply_count"], filters: ["id", "board_id", "user_id"], query: messageQuery, schema: Message, tag: "Messages", order: "created_at.desc" },
   { table: "replies", fields: ["id", "message_id", "user_id", "body", "created_at"], filters: ["id", "message_id", "user_id"], query: replyQuery, schema: Reply, tag: "Replies", order: "created_at.asc" },
   { table: "users", fields: ["id", "name"], filters: ["id"], query: profileQuery, schema: Profile, tag: "Profiles", order: "id.asc" },
 ];

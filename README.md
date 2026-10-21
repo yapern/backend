@@ -50,6 +50,12 @@ require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
 201; deletion returns `{ "data": [], "meta": { "changes": 1 } }`.
 
+Messages expose a read-only `reply_count` stored on each message. Migration
+`013_reply_counts.sql` backfills existing totals once, then database triggers
+adjust the counter atomically on reply insert, delete, or reassignment. Message
+reads do not count or join replies. Apply the migration and deploy the API before
+deploying the web app that requests `reply_count`.
+
 Voting requires migration `012_votes.sql`, which gives existing messages and
 replies their author's initial +1 vote and preserves existing notifications.
 New messages and replies receive the same author vote automatically. Apply the

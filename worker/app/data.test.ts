@@ -71,6 +71,7 @@ test("public table reads support the frontend's filters, columns, ordering, and 
     return (await json(response)).data[0];
   };
   const first = await post("First");
+  assert.equal(first.reply_count, 0);
   await new Promise((resolve) => setTimeout(resolve, 3));
   const second = await post("Second");
 
@@ -107,7 +108,24 @@ test("public table reads support the frontend's filters, columns, ordering, and 
   );
   assert.equal(replyList.status, 200);
   assert.deepEqual((await json(replyList)).data.map((row) => row.body), replies.map((row) => row.body));
+  const counts = await api.request(`${api.table("messages")}?select=id,reply_count&board_id=eq.${board.id}&order=id.asc`);
+  assert.equal(counts.status, 200);
+  assert.deepEqual((await json(counts)).data, [
+    { id: first.id, reply_count: 2 }, { id: second.id, reply_count: 0 },
+  ].sort((a, b) => String(a.id).localeCompare(String(b.id))));
   assert.notEqual(second.id, first.id);
+});
+
+test("clients cannot supply or overwrite a message reply count", async t => {
+  const api = await fixture(t);
+  const author = await api.signIn("reply-count@example.com");
+  const response = await api.request(api.table("messages"), {
+    method: "POST",
+    headers: api.authorized(author, { "content-type": "application/json" }),
+    body: JSON.stringify({ board_id: "general", title: "Forged count", body: "Body", reply_count: 999 }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal(api.database.sqlite.prepare("SELECT COUNT(*) AS n FROM messages").get()?.n, 0);
 });
 
 test("board creators can update only the description while keeping the board's identity and name", async t => {
