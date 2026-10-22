@@ -128,7 +128,9 @@ function selectFields(value: string | undefined, allowed: readonly string[]): st
   return fields.join(",");
 }
 
-function orderFields(value: string, allowed: readonly string[]): string {
+function orderFields(value: string, collection: Collection): string {
+  const allowed = collection.fields.filter(field => field !== "video");
+  if (collection.table === "messages") allowed.push("votes");
   const clauses = value.split(",");
   const fields: string[] = [];
   const ordered = clauses.map(clause => {
@@ -137,9 +139,12 @@ function orderFields(value: string, allowed: readonly string[]): string {
       throw new ApiError(400, "invalid_request");
     }
     fields.push(field);
-    return `${field} ${direction.toUpperCase()}`;
+    const column = field === "votes"
+      ? "(SELECT COALESCE(SUM(value),0) FROM message_votes WHERE message_id=messages.id)"
+      : field;
+    return `${column} ${direction.toUpperCase()}`;
   });
-  // Stable ordering prevents rows shifting between pages with equal timestamps.
+  // Stable ordering prevents rows shifting between pages with equal sort values.
   if (!fields.includes("id")) ordered.push("id ASC");
   return ordered.join(",");
 }
@@ -154,7 +159,8 @@ export function registerDataRoutes(app: Api): void {
       method: "get", path: `/tables/${collection.table}`,
       operationId: `list${collection.tag}`, tags: [collection.tag],
       summary: `Read ${collection.table === "users" ? "public author profiles" : collection.table}`,
-      description: "Supports allowlisted select fields, eq. filters, field.asc/field.desc ordering, and limit/offset pagination (maximum 100). Profiles expose only id and name. The legacy apikey header is accepted but grants no permissions.",
+      description: "Supports allowlisted select fields, eq. filters, field.asc/field.desc ordering, and limit/offset pagination (maximum 100). Profiles expose only id and name. The legacy apikey header is accepted but grants no permissions." +
+        (collection.table === "messages" ? " Messages also support votes.asc/votes.desc to sort by total vote score before pagination; use votes.desc,created_at.desc for newest-first ties." : ""),
       security: [], request: { query: collection.query as z.ZodObject },
       responses: {
         200: jsonResult(rows(collection.schema.partial()), "Matching records in the data array. A select projection may omit fields."),
@@ -165,7 +171,7 @@ export function registerDataRoutes(app: Api): void {
       const selected = selectFields(query.select, collection.fields).split(",");
       const withVideo = collection.table === "messages" && selected.includes("video");
       const fields = selected.map(field => field === "video" ? "id AS __video_message_id" : field).join(",");
-      const order = orderFields(query.order ?? collection.order, collection.fields.filter(field => field !== "video"));
+      const order = orderFields(query.order ?? collection.order, collection);
       const conditions: string[] = [];
       const parameters: (string | number)[] = [];
       for (const column of collection.filters) {

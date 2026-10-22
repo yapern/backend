@@ -116,6 +116,66 @@ test("public table reads support the frontend's filters, columns, ordering, and 
   assert.notEqual(second.id, first.id);
 });
 
+test("message feeds rank live vote totals before pagination with stable ties and board filters", async t => {
+  const api = await fixture(t);
+  const author = await api.signIn("ranked-messages@example.com");
+  const db = api.database.sqlite;
+  for (const id of ["voter-one", "voter-two"]) {
+    db.prepare("INSERT INTO users(id,email,name) VALUES(?,?,?)").run(id, `${id}@example.com`, id);
+  }
+  db.prepare("INSERT INTO boards(id,slug,name) VALUES('other-room','other-room','Other Room')").run();
+  for (const [id, boardId, day] of [
+    ["popular", "general", "01"],
+    ["tie-older", "general", "02"],
+    ["tie-b", "general", "03"],
+    ["tie-a", "general", "03"],
+    ["no-votes", "general", "04"],
+    ["negative", "general", "05"],
+    ["other-popular", "other-room", "01"],
+  ]) {
+    db.prepare("INSERT INTO messages(id,board_id,user_id,title,body,created_at) VALUES(?,?,?,'Title','Body',?)")
+      .run(id, boardId, author.user.id, `2026-10-${day}T00:00:00.000Z`);
+  }
+  for (const [id, voter, value] of [
+    ["popular", "voter-one", 1],
+    ["other-popular", "voter-one", 1],
+    ["other-popular", "voter-two", 1],
+    ["negative", "voter-one", -1],
+    ["negative", "voter-two", -1],
+  ] as const) {
+    db.prepare("INSERT INTO message_votes(message_id,user_id,value) VALUES(?,?,?)").run(id, voter, value);
+  }
+  db.prepare("DELETE FROM message_votes WHERE message_id='no-votes'").run();
+
+  const ranked = ["other-popular", "popular", "tie-a", "tie-b", "tie-older", "no-votes", "negative"];
+  for (const boardId of [undefined, "general"]) {
+    const ids: unknown[] = [];
+    const expected = boardId ? ranked.slice(1) : ranked;
+    for (let offset = 0; offset < expected.length; offset += 2) {
+      const query = new URLSearchParams({ select: "id", order: "votes.desc,created_at.desc", limit: "2", offset: String(offset) });
+      if (boardId) query.set("board_id", `eq.${boardId}`);
+      const response = await api.request(`${api.table("messages")}?${query}`);
+      assert.equal(response.status, 200, await response.clone().text());
+      const rows = (await json(response)).data;
+      assert.ok(rows.every(row => Object.keys(row).join(",") === "id"));
+      ids.push(...rows.map(row => row.id));
+    }
+    assert.deepEqual(ids, expected);
+  }
+  const ascending = await api.request(`${api.table("messages")}?select=id&order=votes.asc&limit=2`);
+  assert.deepEqual((await json(ascending)).data, [{ id: "negative" }, { id: "no-votes" }]);
+  const newest = await api.request(`${api.table("messages")}?select=id&limit=1`);
+  assert.deepEqual((await json(newest)).data, [{ id: "negative" }]);
+
+  const changed = await api.request("/votes", {
+    method: "PUT", headers: api.authorized(author, { "content-type": "application/json" }),
+    body: JSON.stringify({ message_id: "popular", value: 0 }),
+  });
+  assert.equal(changed.status, 200, await changed.clone().text());
+  const updated = await api.request(`${api.table("messages")}?select=id&board_id=eq.general&order=votes.desc,created_at.desc&limit=1`);
+  assert.deepEqual((await json(updated)).data, [{ id: "tie-a" }]);
+});
+
 test("clients cannot supply or overwrite a message reply count", async t => {
   const api = await fixture(t);
   const author = await api.signIn("reply-count@example.com");

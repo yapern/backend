@@ -191,6 +191,10 @@ Run `npm run test:admin` and `npm run test:marketing` for focused checks.
 
 Collection reads retain `select`, `eq.` filters, `order=field.asc` or
 `field.desc`, and `limit`/`offset` pagination. The maximum page size is 100.
+Messages also support `order=votes.desc,created_at.desc` to rank by total vote
+score, with newer messages first when scores tie, before applying pagination.
+Scores come from the existing `message_votes` records; no new migration is
+required. Read scores through `/votes` as before.
 Responses retain the frontend's `{ "data": [...] }` shape. Profile updates
 require `id=eq.<your-user-id>`; message deletion requires an exact `id` filter
 and accepts the frontend's additional board and author filters. Creation returns
