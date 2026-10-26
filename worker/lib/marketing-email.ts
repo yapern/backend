@@ -1,6 +1,21 @@
-import { marketingUnsubscribeUrl, renderMarketingEmail } from "../templates/marketing-email";
+import { compile } from "html-to-text";
+import { renderMarketingEmail } from "../templates/marketing-email";
 import { marketingSender, type MarketingEmail } from "../shared/marketing-email-contract";
 export { marketingSender, marketingEmailSchema, marketingUnsubscribeSchema, type MarketingEmail } from "../shared/marketing-email-contract";
+
+const emailHtmlToText = compile({
+  wordwrap: false,
+  formatters: {
+    imageAlt: (element, _walk, builder) => {
+      if (element.attribs.alt) builder.addInline(element.attribs.alt);
+    },
+  },
+  selectors: [
+    { selector: "img", format: "imageAlt" },
+    { selector: "h1", options: { uppercase: false, leadingLineBreaks: 2 } },
+    { selector: "a", options: { hideLinkHrefIfSameAsText: true } },
+  ],
+});
 
 export class MarketingEmailPreferenceError extends Error {
   constructor(message: "recipient_unsubscribed" | "email_preferences_unavailable") {
@@ -24,11 +39,12 @@ export async function sendMarketingEmail(env: Pick<Env, "DB" | "MARKETING_EMAIL"
   }
   if (preference.unsubscribed) throw new MarketingEmailPreferenceError("recipient_unsubscribed");
   if (!env.MARKETING_EMAIL) throw new Error("email_sending_unavailable");
+  const html = renderMarketingEmail(email.subj, email.message, email.to, email.fancy);
   return env.MARKETING_EMAIL.send({
     from: sender,
     to: email.to,
     subject: email.subj,
-    text: `${email.message}\n\nUnsubscribe: ${marketingUnsubscribeUrl(email.to)}`,
-    html: renderMarketingEmail(email.subj, email.message, email.to, email.fancy),
+    text: emailHtmlToText(html),
+    html,
   });
 }

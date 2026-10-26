@@ -166,6 +166,9 @@ and a trusted `Origin` such as `https://yapern.com`:
 
 `fancy` defaults to true for the Yapern template; false uses plain white HTML
 with an unsubscribe footer. Messages are treated as plain text and HTML-escaped.
+Every email includes a plain-text part generated from the rendered HTML with
+`html-to-text`, so the message, links, and footer share one source. This also
+applies to welcome and notification emails sent through the shared sender.
 The JSON body limit is 1 MiB; message text is limited to 100,000 characters.
 Success is `202 { "ok": true, "messageId": "..." }`, confirming provider
 acceptance. This does not confirm inbox delivery. Sends are never retried

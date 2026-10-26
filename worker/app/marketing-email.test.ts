@@ -44,7 +44,11 @@ test("marketing email includes escaped Yapern HTML, named sender, text and recip
   assert.equal(sent.subject, email.subj);
   const url = marketingUnsubscribeUrl(email.to);
   assert.equal(new URL(url).searchParams.get("email"), email.to);
-  assert.equal(sent.text, `${email.message}\n\nUnsubscribe: ${url}`);
+  assert.ok(sent.text!.includes(email.message.replace(/\r\n?/g, "\n")));
+  assert.ok(sent.text!.includes(email.subj));
+  assert.match(sent.text!, /Visit Yapern \[https:\/\/yapern.com\]/);
+  assert.ok(sent.text!.endsWith(`Unsubscribe [${url}]`));
+  assert.doesNotMatch(sent.text!, /logo\.png|&(?:amp|lt|gt|quot);|<table\b|<style\b/);
   assert.ok(sent.html!.includes(`href="${url}"`));
   assert.match(sent.html!, /Hello &lt;everyone&gt; &amp; &#39;friends&#39;<br>\n<br>\n&lt;img src=&quot;x&quot;&gt;<br>\nBye<br>\nEnd/);
   assert.match(sent.html!, /Hi &lt;friends&gt; &amp; &quot;everyone&quot;/);
@@ -66,7 +70,7 @@ test("fancy=false uses plain HTML with the escaped message and a simple unsubscr
   assert.match(sent.html!, /Hello &lt;friends&gt;<br>\nNext line/);
   assert.equal((sent.html!.match(/<a\b/g) ?? []).length, 1);
   assert.doesNotMatch(sent.html!, /<(?:h1|table|img)\b/);
-  assert.ok(sent.text!.endsWith(`Unsubscribe: ${marketingUnsubscribeUrl(email.to)}`));
+  assert.equal(sent.text, `Hello <friends>\nNext line\n\nUnsubscribe [${marketingUnsubscribeUrl(email.to)}]`);
 });
 
 test("sender parsing accepts a single named mailbox and rejects header injection and multiple senders", () => {

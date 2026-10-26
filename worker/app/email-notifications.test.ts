@@ -79,7 +79,7 @@ test("direct and nested replies email the author being answered, with safe conte
   assert.match(f.emails[0].subject!, /reply to your message/);
   assert.ok(f.emails[0].text!.includes(`https://yapern.com/y/general/root#reply-${firstId}`));
   assert.match(f.emails[0].html!, /Hello &lt;friends&gt;/);
-  assert.match(f.emails[0].text!, /Unsubscribe: https:\/\/api.yapern.com\/unsubscribe\?email=/);
+  assert.match(f.emails[0].text!, /Unsubscribe \[https:\/\/api.yapern.com\/unsubscribe\?email=/);
   assert.equal((await reply(f, "Nested answer", firstId, f.adminToken)).status, 201);
   assert.equal(f.emails.length, 2);
   assert.equal(f.emails[1].to, "member@example.com");

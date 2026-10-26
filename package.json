@@ -15,6 +15,7 @@
     "deploy": "CI=true wrangler d1 migrations apply delta --remote && wrangler deploy"
   },
   "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
     "@types/node": "^26.6.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
@@ -24,6 +25,7 @@
     "@hono/swagger-ui": "^0.6.1",
     "@hono/zod-openapi": "^1.6.3",
     "hono": "^4.13.13",
+    "html-to-text": "^10.0.1",
     "zod": "^4.6.7"
   }
 }
