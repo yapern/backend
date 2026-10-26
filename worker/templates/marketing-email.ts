@@ -11,27 +11,37 @@ export function marketingUnsubscribeUrl(email: string): string {
 export function renderMarketingEmail(subject: string, message: string, recipientEmail: string, fancy = true): string {
   const title = escapeHtml(subject);
   const content = escapeHtml(message).replace(/\r\n?|\n/g, "<br>\n");
-  const unsubscribe = `<a href="${escapeHtml(marketingUnsubscribeUrl(recipientEmail))}" style="display:inline-block;padding:12px 0;color:${fancy ? "#acb6ce" : "#595959"};text-decoration:underline;">Unsubscribe</a>`;
+  const fontFamily = fancy ? "system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" : "Arial,Helvetica,sans-serif";
+  const unsubscribe = `<a href="${escapeHtml(marketingUnsubscribeUrl(recipientEmail))}" style="display:inline-block;padding:12px 0;color:#595959;text-decoration:underline;">Unsubscribe</a>`;
   const body = fancy ? `
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;table-layout:fixed;">
+  <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;table-layout:fixed;">
     <tr><td align="center" style="padding:24px 16px;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;table-layout:fixed;border-collapse:collapse;">
-        <tr><td style="padding:16px 0 24px;"><a href="https://yapern.com" style="display:inline-block;padding:12px 0;color:#f2f2fb;font-size:24px;font-weight:700;text-decoration:none;"><img src="https://yapern.com/images/logo.png" alt="" width="40" height="40" style="display:inline-block;width:40px;height:40px;margin:0 8px 0 0;border:0;vertical-align:middle;">Yapern</a></td></tr>
-        <tr><td style="padding:24px 0;overflow-wrap:anywhere;word-break:break-word;">
-          <h1 style="margin:0 0 24px;font-size:24px;line-height:1.3;">${title}</h1>
-          <div style="color:#f2f2fb;font-size:16px;line-height:1.6;">${content}</div>
+      <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:520px;table-layout:fixed;border-collapse:collapse;">
+        <tr><td style="padding:0 0 16px;"><a href="https://yapern.com" style="display:inline-block;padding:2px;text-decoration:none;"><img src="https://yapern.com/images/logo.png" alt="Yapern" width="40" height="40" style="display:block;width:40px;height:40px;border:0;border-radius:8px;"></a></td></tr>
+        <tr><td style="padding:0 0 16px;overflow-wrap:anywhere;word-break:break-word;">
+          <h1 style="margin:0;color:#363737;font-size:24px;line-height:28px;font-weight:700;">${title}</h1>
         </td></tr>
-        <tr><td style="padding:24px 0 0;color:#acb6ce;font-size:13px;line-height:1.5;">${unsubscribe}</td></tr>
+        <tr><td>
+          <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;">
+            <tr><td style="padding:24px;border:1px solid #e5e5e5;border-radius:20px;background-color:#ffffff;color:#363737;font-size:16px;line-height:24px;overflow-wrap:anywhere;word-break:break-word;">${content}</td></tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:16px 0 0;">
+          <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:separate;border-spacing:0;">
+            <tr><td align="center" bgcolor="#b39aff" style="border-radius:8px;background-color:#b39aff;"><a href="https://yapern.com" style="display:block;padding:12px 24px;border:1px solid #b39aff;border-radius:8px;color:#090d17;font-size:15px;line-height:20px;font-weight:600;text-align:center;text-decoration:none;">Visit Yapern</a></td></tr>
+          </table>
+        </td></tr>
+        <tr><td align="center" style="padding:24px 0 0;color:#595959;font-size:13px;line-height:20px;">&copy; ${new Date().getUTCFullYear()} Yapern<br>${unsubscribe}</td></tr>
       </table>
     </td></tr>
   </table>` : `${content}\n<p style="margin:24px 0 0;font-size:12px;line-height:1.5;">${unsubscribe}</p>`;
   return `<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="${fancy ? "dark" : "light"}">
+  <meta name="color-scheme" content="light">
   <title>${title}</title>
 </head>
-<body style="margin:0;padding:${fancy ? "0" : "16px"};background-color:${fancy ? "#090d17" : "#ffffff"};color:${fancy ? "#f2f2fb" : "#000000"};font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word;-webkit-text-size-adjust:100%;">
+<body style="margin:0;padding:${fancy ? "0" : "16px"};background-color:#ffffff;color:${fancy ? "#363737" : "#000000"};font-family:${fontFamily};font-size:16px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word;-webkit-text-size-adjust:100%;">
 ${body}
 </body></html>`;
 }
