@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "@hono/zod-openapi";
 import { ApiError } from "./contracts";
-import { CrawlFailure, crawlUrl, discoverArticles, type Article } from "./crawl-discovery";
+import { crawlFailure, crawlUrl, discoverArticles, type Article } from "./crawl-discovery";
 
 export const CrawlJob = z.object({
   id: z.string(), source_id: z.string(), board_id: z.string(),
@@ -117,11 +117,13 @@ export async function consumeCrawls(batch: MessageBatch<unknown>, env: Env, disc
       const source = await env.DB.prepare("SELECT s.url FROM board_crawler_urls s JOIN boards b ON b.id=s.board_id WHERE s.id=? AND s.board_id=? AND b.user_id=?")
         .bind(row.source_id, row.board_id, row.user_id).first<{ url: string }>();
       if (!source) { message.ack(); continue; }
+      let stage = "discovery";
       try {
         const result = await discover(source.url, {
           seen: async url => Boolean(await env.DB.prepare("SELECT url FROM board_crawled_articles WHERE board_id=? AND url=?").bind(row.board_id, url).first()),
         });
         const articles = result.articles.slice().reverse();
+        stage = "saving_messages";
         const now = Date.now();
         for (let index = 0; index < articles.length; index++) {
           await saveArticle(env, row, lease, articles[index], new Date(now - articles.length + index).toISOString());
@@ -129,8 +131,12 @@ export async function consumeCrawls(batch: MessageBatch<unknown>, env: Env, disc
         await env.DB.prepare("UPDATE board_crawl_jobs SET state='succeeded',skipped_count=skipped_count+?,error=NULL,finished_at=?,lease=NULL,lease_until=0 WHERE id=? AND lease=?")
           .bind(result.skipped, new Date().toISOString(), row.id, lease).run();
       } catch (error) {
-        const code = error instanceof CrawlFailure ? error.message : error instanceof Error && /abort|timeout/i.test(error.name) ? "crawl_timeout" : "crawl_failed";
-        console.warn("[crawler] job failed", { jobId: row.id, code });
+        const failure = crawlFailure(error, { stage, url: source.url });
+        const code = failure.message;
+        const cause = failure.cause instanceof Error ? failure.cause : error instanceof Error ? error : null;
+        console.warn("[crawler] job failed", { jobId: row.id, sourceUrl: source.url, code, ...failure.details,
+          error: cause ? { name: cause.name, message: cause.message, stack: cause.stack,
+            ...(cause.cause instanceof Error ? { cause: { name: cause.cause.name, message: cause.cause.message } } : {}) } : String(error) });
         await env.DB.prepare("UPDATE board_crawl_jobs SET state=?,error=?,finished_at=?,lease=NULL,lease_until=0 WHERE id=? AND lease=?")
           .bind(code === "robots_blocked" ? "blocked" : "failed", code, new Date().toISOString(), row.id, lease).run();
       }

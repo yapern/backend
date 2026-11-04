@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CrawlAccess, CrawlFailure, CRAWLER_USER_AGENT, discoverArticles, parseFeed } from "./crawl-discovery";
+import { CrawlAccess, CrawlFailure, CRAWLER_USER_AGENT, crawlFailure, discoverArticles, parseFeed } from "./crawl-discovery";
 import type { DnsResolver } from "./preview-metadata";
 
 const origin = "https://publisher.com";
@@ -134,4 +134,33 @@ test("redirected articles cannot bypass robots and off-site feed entries are not
   assert.deepEqual(result.articles, []);
   assert.equal(result.skipped, 1);
   assert.ok(!f.requests.some(url => url.includes("/private") || url.includes("other.com")));
+});
+
+test("the default fetch keeps the global receiver required by native Worker fetch", async t => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", function(this: unknown, _input: unknown, options: RequestInit) {
+    assert.equal(this, globalThis);
+    assert.equal(new Headers(options.headers).get("user-agent"), CRAWLER_USER_AGENT);
+    calls++;
+    return Promise.resolve(new Response("User-agent: *\nAllow: /"));
+  });
+  const access = new CrawlAccess({ resolver: publicDns });
+  assert.equal(await access.allowed(new URL(origin)), true);
+  assert.equal(calls, 1);
+});
+
+test("network errors preserve URL and request stage and classify DNS, TLS and timeouts", async () => {
+  const f = site({});
+  const root = new TypeError("fetch failed", { cause: new Error("certificate expired") });
+  const access = new CrawlAccess({ ...f.options, fetcher: async () => { throw root; } });
+  await assert.rejects(access.allowed(new URL(origin)), error => {
+    assert.ok(error instanceof CrawlFailure);
+    assert.deepEqual(error.details, { url: `${origin}/robots.txt`, stage: "robots", phase: "fetch", httpStatus: undefined, contentType: undefined });
+    assert.equal(error.cause, root);
+    assert.equal(error.message, "crawl_tls_failed");
+    return true;
+  });
+  assert.equal(crawlFailure(new Error("preview_dns_failed")).message, "crawl_dns_failed");
+  assert.equal(crawlFailure(new Error("certificate has expired")).message, "crawl_tls_failed");
+  assert.equal(crawlFailure(new DOMException("expired", "TimeoutError")).message, "crawl_timeout");
 });

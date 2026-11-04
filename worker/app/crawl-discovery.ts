@@ -1,14 +1,37 @@
 import { setTimeout as wait } from "node:timers/promises";
 import robotsParser from "robots-parser";
 import { XMLParser } from "fast-xml-parser";
-import { convert } from "html-to-text";
+import { compile } from "html-to-text";
 import { checkPublicDns, defaultResolver, safePublicUrl, type DnsResolver } from "./preview-metadata";
 
 export const CRAWLER_USER_AGENT = "yapern.com crawler v1.0.0";
 export const CRAWL_PAGE_SIZE = 20;
 const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 const MAX_REQUESTS = 45;
-export class CrawlFailure extends Error {}
+type RequestDetails = { url?: string; stage?: string; phase?: string; httpStatus?: number; contentType?: string };
+export class CrawlFailure extends Error {
+  constructor(code: string, readonly details: RequestDetails = {}, cause?: unknown) {
+    super(code, { cause });
+    this.name = "CrawlFailure";
+  }
+}
+
+export function crawlFailure(error: unknown, details: RequestDetails = {}): CrawlFailure {
+  if (error instanceof CrawlFailure) return new CrawlFailure(error.message, { ...details, ...error.details }, error.cause);
+  const descriptions: string[] = [];
+  let cause = error;
+  for (let depth = 0; depth < 4 && cause; depth++) {
+    descriptions.push(cause instanceof Error ? `${cause.name} ${cause.message}` : String(cause));
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  const value = descriptions.join(" ");
+  const code = /abort|timeout|timed out/i.test(value) ? "crawl_timeout" :
+    /preview_dns_not_public/.test(value) ? "unsafe_url" :
+    /preview_dns_failed|ENOTFOUND|EAI_AGAIN/i.test(value) ? "crawl_dns_failed" :
+    /certificate|TLS|SSL|CERT_/i.test(value) ? "crawl_tls_failed" :
+    /fetch failed|ECONNREFUSED|ECONNRESET|ENETUNREACH|EHOSTUNREACH/i.test(value) ? "crawl_connection_failed" : "crawl_failed";
+  return new CrawlFailure(code, details, error);
+}
 export type Article = { url: string; title: string; summary: string; publishedAt: string | null };
 type Candidate = Partial<Article> & { url: string; fromSitemap?: boolean };
 type Document = { text: string; url: URL; headers: Headers };
@@ -29,9 +52,11 @@ function articleUrl(value: string, base: URL): URL | null {
   return url;
 }
 
-const plain = (value: unknown, limit = 700): string => convert(typeof value === "string" ? value : "", {
+const toText = compile({
   wordwrap: false, selectors: [{ selector: "a", options: { ignoreHref: true } }, { selector: "img", format: "skip" }],
-}).replace(/\s+/g, " ").trim().slice(0, limit);
+});
+const plain = (value: unknown, limit = 700): string => toText(typeof value === "string" ? value : "")
+  .replace(/\s+/g, " ").trim().slice(0, limit);
 const text = (value: any): string => typeof value === "string" ? value : typeof value?.["#text"] === "string" ? value["#text"] : "";
 const array = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 const date = (value: unknown): string | null => typeof value === "string" && Number.isFinite(Date.parse(value)) &&
@@ -60,67 +85,84 @@ export class CrawlAccess {
   private readonly pause: NonNullable<Options["pause"]>;
 
   constructor(options: Options = {}) {
-    this.fetcher = options.fetcher ?? fetch;
+    // Native Worker fetch requires the global receiver. Calling an unbound
+    // copy as this.fetcher(...) throws Illegal invocation in workerd.
+    this.fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.resolver = options.resolver ?? defaultResolver;
     this.signal = options.signal ?? AbortSignal.timeout(90_000);
     this.pause = options.pause ?? (async (ms, signal) => { await wait(ms, undefined, { signal }); });
   }
 
-  private async request(start: URL, robots: boolean): Promise<Document | null> {
+  private async request(start: URL, robots: boolean, stage = "page"): Promise<Document | null> {
     let url = start;
-    for (let redirects = 0; redirects <= 5; redirects++) {
-      this.signal.throwIfAborted();
-      if (++this.requests > MAX_REQUESTS) throw new CrawlFailure("crawl_limit");
-      if (!robots && !await this.allowed(url)) throw new CrawlFailure("robots_blocked");
-      const remaining = (this.nextRequest.get(url.origin) ?? 0) - Date.now();
-      if (remaining > 0) await this.pause(remaining, this.signal);
-      const signal = AbortSignal.any([this.signal, AbortSignal.timeout(8_000)]);
-      await checkPublicDns(url.hostname, this.resolver, signal);
-      const policy = !robots ? await this.policy(url) : null;
-      const delay = Math.max(250, (policy?.getCrawlDelay("yapern") ?? 0) * 1000);
-      this.nextRequest.set(url.origin, Date.now() + delay);
-      const response = await this.fetcher(url.href, {
-        redirect: "manual", signal,
-        headers: { "user-agent": CRAWLER_USER_AGENT, accept: robots ? "text/plain" : "text/html,application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,application/feed+json;q=0.8" },
-      });
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get("location");
-        await response.body?.cancel();
-        const next = location && safePublicUrl(location, url);
-        if (!next || next.protocol !== "https:" || redirects === 5) throw new CrawlFailure("unsafe_redirect");
-        url = next;
-        continue;
-      }
-      if (!response.ok) {
-        await response.body?.cancel();
-        if (robots && [404, 410].includes(response.status)) return { text: "", url, headers: response.headers };
-        if (robots) throw new CrawlFailure("robots_unavailable");
-        return null;
-      }
-      const contentType = response.headers.get("content-type") ?? "";
-      if (!robots && contentType && !/(?:text\/|xml|json)/i.test(contentType)) {
-        await response.body?.cancel();
-        return null;
-      }
-      const reader = response.body?.getReader();
-      if (!reader) return { text: "", url, headers: response.headers };
-      const decoder = new TextDecoder();
-      let body = "", bytes = 0;
-      try {
-        while (true) {
-          signal.throwIfAborted();
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          bytes += chunk.value.byteLength;
-          if (bytes > (robots ? 512 * 1024 : MAX_DOCUMENT_BYTES)) throw new CrawlFailure("document_too_large");
-          body += decoder.decode(chunk.value, { stream: true });
+    let phase = "robots";
+    let httpStatus: number | undefined;
+    let contentType: string | undefined;
+    try {
+      for (let redirects = 0; redirects <= 5; redirects++) {
+        this.signal.throwIfAborted();
+        if (++this.requests > MAX_REQUESTS) throw new CrawlFailure("crawl_limit");
+        if (!robots && !await this.allowed(url)) throw new CrawlFailure("robots_blocked");
+        const remaining = (this.nextRequest.get(url.origin) ?? 0) - Date.now();
+        if (remaining > 0) await this.pause(remaining, this.signal);
+        const signal = AbortSignal.any([this.signal, AbortSignal.timeout(8_000)]);
+        phase = "dns";
+        await checkPublicDns(url.hostname, this.resolver, signal);
+        const policy = !robots ? await this.policy(url) : null;
+        const delay = Math.max(250, (policy?.getCrawlDelay("yapern") ?? 0) * 1000);
+        this.nextRequest.set(url.origin, Date.now() + delay);
+        phase = "fetch";
+        const response = await this.fetcher(url.href, {
+          redirect: "manual", signal,
+          headers: { "user-agent": CRAWLER_USER_AGENT, accept: robots ? "text/plain" : "text/html,application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,application/feed+json;q=0.8" },
+        });
+        httpStatus = response.status;
+        contentType = response.headers.get("content-type") ?? "";
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get("location");
+          await response.body?.cancel();
+          const next = location && safePublicUrl(location, url);
+          if (!next || next.protocol !== "https:" || redirects === 5) throw new CrawlFailure("unsafe_redirect");
+          url = next;
+          continue;
         }
-        body += decoder.decode();
-      } finally { await reader.cancel().catch(() => {}); }
-      if (robots && /<html\b|<!doctype\s+html/i.test(body)) throw new CrawlFailure("robots_unavailable");
-      return { text: body, url, headers: response.headers };
+        if (!response.ok) {
+          await response.body?.cancel();
+          if (robots && [404, 410].includes(response.status)) return { text: "", url, headers: response.headers };
+          if (robots) throw new CrawlFailure("robots_unavailable");
+          if (response.status !== 404) console.warn("[crawler] HTTP response rejected", { url: url.href, stage, httpStatus, contentType });
+          return null;
+        }
+        if (!robots && contentType && !/(?:text\/|xml|json)/i.test(contentType)) {
+          await response.body?.cancel();
+          return null;
+        }
+        const reader = response.body?.getReader();
+        if (!reader) return { text: "", url, headers: response.headers };
+        const decoder = new TextDecoder();
+        let body = "", bytes = 0;
+        phase = "read";
+        try {
+          while (true) {
+            signal.throwIfAborted();
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            bytes += chunk.value.byteLength;
+            if (bytes > (robots ? 512 * 1024 : MAX_DOCUMENT_BYTES)) throw new CrawlFailure("document_too_large");
+            body += decoder.decode(chunk.value, { stream: true });
+          }
+          body += decoder.decode();
+        } finally { await reader.cancel().catch(() => {}); }
+        if (robots && /<html\b|<!doctype\s+html/i.test(body)) throw new CrawlFailure("robots_unavailable");
+        return { text: body, url, headers: response.headers };
+      }
+      throw new CrawlFailure("unsafe_redirect");
+    } catch (error) {
+      const failure = crawlFailure(error, { url: url.href, stage: robots ? "robots" : stage, phase, httpStatus, contentType });
+      console.warn("[crawler] request failed", { code: failure.message, ...failure.details,
+        error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error) });
+      throw failure;
     }
-    throw new CrawlFailure("unsafe_redirect");
   }
 
   async policy(url: URL) {
@@ -132,7 +174,7 @@ export class CrawlAccess {
     return pending;
   }
   async allowed(url: URL): Promise<boolean> { return (await this.policy(url)).isAllowed(url.href, "yapern") === true; }
-  async document(url: URL): Promise<Document | null> { return this.request(url, false); }
+  async document(url: URL, stage = "page"): Promise<Document | null> { return this.request(url, false, stage); }
 }
 
 function xml(content: string): any {
@@ -223,10 +265,10 @@ export async function discoverArticles(value: string, options: Options = {}): Pr
   const metadata = pageMetadata(page.text, page.url);
   let candidates = parseFeed(page.text, page.url);
   const tried = new Set<string>([page.url.href]);
-  const optional = async (url: URL) => {
+  const optional = async (url: URL, stage = "article") => {
     if (tried.has(url.href)) return null;
     tried.add(url.href);
-    try { return await access.document(url); }
+    try { return await access.document(url, stage); }
     catch (error) {
       if (access.signal.aborted || (error instanceof CrawlFailure && ["crawl_limit"].includes(error.message))) throw error;
       return null;
@@ -234,7 +276,7 @@ export async function discoverArticles(value: string, options: Options = {}): Pr
   };
   for (const feed of [...metadata.feeds.slice(0, 3), ...["feed", "rss.xml", "atom.xml"].map(path => new URL(path, new URL("./", page.url)))]) {
     if (candidates?.length) break;
-    const document = await optional(feed);
+    const document = await optional(feed, "feed");
     if (document) { try { candidates = parseFeed(document.text, document.url); } catch { /* Try the next discovery format. */ } }
   }
   if (!candidates?.length) {
@@ -243,7 +285,7 @@ export async function discoverArticles(value: string, options: Options = {}): Pr
     for (let index = 0; index < sitemaps.length && index < 6; index++) {
       const target = crawlUrl(sitemaps[index], page.url);
       if (!target) continue;
-      const document = await optional(target);
+      const document = await optional(target, "sitemap");
       if (!document) continue;
       try {
         const data = xml(document.text);

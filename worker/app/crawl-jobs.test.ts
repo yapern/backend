@@ -168,3 +168,20 @@ test("unsafe URLs and a missing queue reject the job before any fetch or post", 
   assert.equal(f.queued.length, 0);
   assert.equal(f.messages().length, 0);
 });
+
+test("failed jobs log the source, stage, exception, stack and nested cause", async t => {
+  const f = await fixture(t);
+  const logs: Array<{ label: string; details: any }> = [];
+  t.mock.method(console, "warn", (label: string, details: unknown) => logs.push({ label, details }));
+  await f.start();
+  await f.deliver(undefined, async () => { throw new TypeError("fetch failed", { cause: new Error("TLS certificate expired") }); });
+  const failed = logs.find(log => log.label === "[crawler] job failed")!.details;
+  assert.equal(failed.sourceUrl, "https://publisher.com/site-one");
+  assert.equal(failed.stage, "discovery");
+  assert.equal(failed.code, "crawl_tls_failed");
+  assert.equal(failed.error.name, "TypeError");
+  assert.equal(failed.error.message, "fetch failed");
+  assert.match(failed.error.stack, /TypeError: fetch failed/);
+  assert.equal(failed.error.cause.message, "TLS certificate expired");
+  assert.equal((await latestCrawl(f.env, "crawl-board", "site-one"))?.error, "crawl_tls_failed");
+});
