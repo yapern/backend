@@ -32,6 +32,10 @@ API routes:
 | GET | `/tables/boards` | Read boards |
 | POST | `/tables/boards` | Create a board |
 | PATCH | `/tables/boards` | Update the description and logo of a board you created |
+| GET / POST | `/boards/:boardId/crawler-urls` | List or add the board owner's crawl sources |
+| DELETE | `/boards/:boardId/crawler-urls/:urlId` | Remove a crawl source |
+| POST | `/boards/:boardId/crawler-urls/:urlId/crawl` | Queue a crawl and return its job with HTTP 202 |
+| GET | `/boards/:boardId/crawler-urls/:urlId/crawl` | Read the site's latest crawl job |
 | GET / HEAD | `/board-logos/:filename` | Read a public board logo from R2 |
 | GET | `/tables/messages` | Read messages |
 | POST | `/tables/messages` | Create a titled message |
@@ -57,6 +61,30 @@ API routes:
 | POST | `/og-image` | Read link metadata or queue a screenshot |
 | GET | `/previews/{id}` | Read your screenshot job status |
 | GET, HEAD | `/preview-images/{id}.jpg` | Read a public cached screenshot |
+
+## Board crawls
+
+Apply migrations through `019_board_crawl_jobs.sql` before deploying the Worker
+and Crawler UI. Crawl jobs share the existing `yapern-previews` queue using
+`{ kind: "crawl", id }` messages; no additional queue binding is required.
+The scheduled handler recovers expired or interrupted jobs. The saved-source
+list includes each site's latest job, so the UI resumes polling after reload.
+
+Only the board owner can start a crawl or read its status. Jobs check HTTPS
+`/robots.txt` before fetching the source, feeds, sitemaps, redirects or article
+pages. All outgoing requests use `yapern.com crawler v1.0.0`. Missing robots
+files (404/410) permit crawling; unavailable robots, disallowed paths and unsafe
+network destinations prevent fetching. Crawl-delay is respected. Each job is
+bounded to 90 seconds, 45 HTTP requests, and 20 first-page article candidates.
+
+Discovery prefers RSS, Atom or JSON Feed, including HTML alternate links; then
+robots-declared sitemaps and sitemap indexes; then article links on the source's
+first page. Available publication/last-modified dates prioritize recent results.
+It does not follow pagination or search the whole site. Article references are
+normal messages by the board owner, with a title, original source URL and a short
+summary. Import records deduplicate URLs across this board's sources, jobs and
+queue retries, and remain after message deletion. New jobs are limited to 100
+per owner per UTC day; repeated starts of an active job return that existing job.
 
 ## Email notifications
 
