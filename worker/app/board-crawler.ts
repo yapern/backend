@@ -13,7 +13,7 @@ const urlInput = z.object({
   url: z.string().trim().min(1).max(2048).refine(value => {
     try {
       const url = new URL(value);
-      return /^https?:\/\//i.test(value) && ["http:", "https:"].includes(url.protocol) &&
+      return /^https?:\/\//i.test(value) && !/[\s\u0000-\u001f\u007f]/.test(value) && ["http:", "https:"].includes(url.protocol) &&
         !url.username && !url.password && url.href.length <= 2048;
     } catch { return false; }
   }),
