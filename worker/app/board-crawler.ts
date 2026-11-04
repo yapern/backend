@@ -2,12 +2,13 @@ import { z } from "@hono/zod-openapi";
 import { errorResult, jsonContent, jsonResult, registerRoute, type Api } from "../shared/openapi";
 import { requireSession } from "./auth";
 import { ApiError, protectedSecurity } from "./contracts";
+import { CrawlJob, latestBoardCrawls, latestCrawl, startCrawl } from "./crawl-jobs";
 
 const identifier = z.string().trim().min(1).max(512);
 const boardParams = z.object({ boardId: identifier });
 const urlParams = boardParams.extend({ urlId: identifier });
 const CrawlerUrl = z.object({
-  id: z.string(), board_id: z.string(), url: z.string(), created_at: z.string(),
+  id: z.string(), board_id: z.string(), url: z.string(), created_at: z.string(), crawl: CrawlJob.optional(),
 }).openapi("BoardCrawlerUrl");
 const urlInput = z.object({
   url: z.string().trim().min(1).max(2048).refine(value => {
@@ -26,12 +27,13 @@ const errors = {
   404: errorResult("The board or URL does not exist (not_found)."),
 };
 
-async function requireOwner(request: Request, env: Env, boardId: string): Promise<void> {
+async function requireOwner(request: Request, env: Env, boardId: string): Promise<string> {
   const session = await requireSession(request, env);
   const board = await env.DB.prepare("SELECT user_id FROM boards WHERE id=?")
     .bind(boardId).first<{ user_id: string | null }>();
   if (!board) throw new ApiError(404, "not_found");
   if (board.user_id !== session.user_id) throw new ApiError(403, "permission_denied");
+  return session.user_id;
 }
 
 export function registerBoardCrawlerRoutes(app: Api): void {
@@ -46,7 +48,8 @@ export function registerBoardCrawlerRoutes(app: Api): void {
     await requireOwner(c.req.raw, c.env, boardId);
     const result = await c.env.DB.prepare("SELECT id,board_id,url,created_at FROM board_crawler_urls WHERE board_id=? ORDER BY created_at ASC, rowid ASC")
       .bind(boardId).all();
-    return c.json({ data: result.results });
+    const jobs = await latestBoardCrawls(c.env, boardId);
+    return c.json({ data: result.results.map(row => ({ ...row, ...(jobs.has(String(row.id)) ? { crawl: jobs.get(String(row.id)) } : {}) })) });
   });
 
   registerRoute(app, {
@@ -64,6 +67,33 @@ export function registerBoardCrawlerRoutes(app: Api): void {
       .bind(boardId, url).first();
     if (!row) throw new ApiError(409, "crawler_url_exists");
     return c.json({ data: [row] }, 201);
+  });
+
+  registerRoute(app, {
+    method: "post", path: `${path}/{urlId}/crawl`, operationId: "crawlBoardSite", tags: ["Boards"],
+    summary: "Queue a robots-aware HTTPS crawl and post up to 20 recent article references to your board", security: protectedSecurity,
+    description: "Uses User-Agent: yapern.com crawler v1.0.0. Checks robots.txt, then RSS/Atom/JSON feeds, sitemaps, and first-page article links. Imports titles, source URLs and short summaries as messages by the board owner. Previously imported URLs are skipped across sources and repeated jobs. Repeated requests while a job is active return that same job. Poll GET on this path for progress.",
+    request: { params: urlParams },
+    responses: { ...errors, 202: jsonResult(z.object({ data: CrawlJob }), "Queued or already active crawl job."),
+      429: errorResult("The daily limit of 100 crawl jobs was reached (crawl_limit)."),
+      503: errorResult("The background queue is unavailable (crawl_queue_unavailable).") },
+  }, async c => {
+    const { boardId, urlId } = urlParams.parse(c.req.param());
+    const userId = await requireOwner(c.req.raw, c.env, boardId);
+    return c.json({ data: await startCrawl(c.env, boardId, urlId, userId) }, 202);
+  });
+
+  registerRoute(app, {
+    method: "get", path: `${path}/{urlId}/crawl`, operationId: "getBoardSiteCrawl", tags: ["Boards"],
+    summary: "Read the latest crawl job for a site on your board", security: protectedSecurity,
+    request: { params: urlParams },
+    responses: { ...errors, 200: jsonResult(z.object({ data: CrawlJob.nullable() }), "Latest job, or null before the first crawl."),
+      503: errorResult("The background queue is unavailable (crawl_queue_unavailable).") },
+  }, async c => {
+    const { boardId, urlId } = urlParams.parse(c.req.param());
+    await requireOwner(c.req.raw, c.env, boardId);
+    if (!await c.env.DB.prepare("SELECT id FROM board_crawler_urls WHERE id=? AND board_id=?").bind(urlId, boardId).first()) throw new ApiError(404, "not_found");
+    return c.json({ data: await latestCrawl(c.env, boardId, urlId) });
   });
 
   registerRoute(app, {

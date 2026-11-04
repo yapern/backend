@@ -61,6 +61,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /board-logos/{filename}",
     "GET /board-messages/{filename}",
     "GET /boards/{boardId}/crawler-urls",
+    "GET /boards/{boardId}/crawler-urls/{urlId}/crawl",
     "GET /health",
     "GET /messages/{messageId}/replies",
     "GET /messages/{messageId}/replies/{replyId}/context",
@@ -87,6 +88,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "POST /api/unsubscribe",
     "POST /auth/email",
     "POST /boards/{boardId}/crawler-urls",
+    "POST /boards/{boardId}/crawler-urls/{urlId}/crawl",
     "POST /notifications/read",
     "POST /notifications/ticket",
     "POST /og-image",
@@ -134,7 +136,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
-    "AddBoardCrawlerUrl", "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "BoardCrawlerUrl", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
+    "AddBoardCrawlerUrl", "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "BoardCrawlJob", "BoardCrawlerUrl", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "EmailNotificationPreferences", "Error", "LinkPreview", "LinkPreviewRequest",
     "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "MessageVideo", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
