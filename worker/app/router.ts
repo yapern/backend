@@ -9,6 +9,7 @@ import { errorResult, jsonResult, OkSchema, registerRoute, type ApiEnv } from ".
 import { registerAuthRoutes } from "./auth";
 import { ApiError } from "./contracts";
 import { registerDataRoutes } from "./data";
+import { registerBoardCrawlerRoutes } from "./board-crawler";
 import { registerPreviewRoutes } from "./previews";
 import { MAX_IMAGE_BYTES, registerBoardImageRoutes } from "./board-images";
 import { registerNotificationRoutes } from "./notifications";
@@ -41,7 +42,7 @@ function allowedOrigins(env: Env): string[] {
   return env.YAPERN_ORIGINS?.split(",").map(origin => origin.trim()).filter(Boolean) ?? defaultOrigins;
 }
 
-for (const path of ["/auth/email", "/auth/session", "/account/*", "/tables/*", "/messages/*", "/videos", "/videos/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
+for (const path of ["/auth/email", "/auth/session", "/account/*", "/tables/*", "/boards/*", "/messages/*", "/videos", "/videos/*", "/votes", "/search", "/og-image", "/previews/*", "/notifications", "/notifications/*", "/admin/*", "/api/get-marketing-users", "/api/send-marketing-email", "/api/unsubscribe", "/unsubscribe"]) {
   // Forms hosted by this API submit from its own origin.
   const isAllowed = (origin: string, env: Env, requestUrl: string) => allowedOrigins(env).includes(origin) ||
     (path === "/unsubscribe" && origin === new URL(requestUrl).origin);
@@ -78,6 +79,7 @@ app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
 registerAuthRoutes(app);
 registerEmailNotificationRoutes(app);
 registerDataRoutes(app);
+registerBoardCrawlerRoutes(app);
 registerReplyPageRoutes(app);
 registerSearchRoutes(app);
 registerVoteRoutes(app);

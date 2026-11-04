@@ -48,6 +48,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
   assert.deepEqual(documented, registered);
   assert.deepEqual(documented, [
     "DELETE /auth/session",
+    "DELETE /boards/{boardId}/crawler-urls/{urlId}",
     "DELETE /tables/messages",
     "DELETE /videos/{id}",
     "GET /account/email-notifications",
@@ -59,6 +60,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "GET /auth/session",
     "GET /board-logos/{filename}",
     "GET /board-messages/{filename}",
+    "GET /boards/{boardId}/crawler-urls",
     "GET /health",
     "GET /messages/{messageId}/replies",
     "GET /messages/{messageId}/replies/{replyId}/context",
@@ -84,6 +86,7 @@ test("OpenAPI covers every API operation registered with Hono", async () => {
     "POST /api/send-marketing-email",
     "POST /api/unsubscribe",
     "POST /auth/email",
+    "POST /boards/{boardId}/crawler-urls",
     "POST /notifications/read",
     "POST /notifications/ticket",
     "POST /og-image",
@@ -131,7 +134,7 @@ test("OpenAPI contains only current schemas and tags", async () => {
   const doc = await document();
   assert.deepEqual(Object.keys(doc.components.securitySchemes ?? {}), ["bearerAuth"]);
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), [
-    "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
+    "AddBoardCrawlerUrl", "AdminUser", "AppState", "AuthSession", "AuthUser", "Board", "BoardCrawlerUrl", "CreateBoard", "CreateMessage", "CreateMessageImage", "CreateMessageVideo", "CreateReply", "CreateVideoUpload",
     "CurrentSession", "EmailAuthRequest", "EmailAuthResult", "EmailNotificationPreferences", "Error", "LinkPreview", "LinkPreviewRequest",
     "MarketingEmailRequest", "MarketingUnsubscribeRequest", "MarketingUser", "Message", "MessageVideo", "NotificationSnapshot", "Ok", "PublicProfile", "Reply", "ReplyChildrenPage", "ReplyContext", "ReplyWithAuthor", "RevokedSession", "SearchResults", "SetVote", "UpdateBoardDescription", "UpdateBoardLogo", "UpdateProfile", "VoteResults", "VoteSummary",
   ]);
@@ -188,7 +191,7 @@ test("OpenAPI marks protected operations as authenticated and unsubscribe as pub
   const doc = await document();
   for (const [path, methods] of Object.entries(doc.paths)) {
     for (const [method, operation] of Object.entries(methods)) {
-      const requiresSession = path.startsWith("/account/") || path.startsWith("/admin/") || path === "/api/get-marketing-users" || path.startsWith("/previews/") ||
+      const requiresSession = path.startsWith("/account/") || path.startsWith("/admin/") || path.startsWith("/boards/") || path === "/api/get-marketing-users" || path.startsWith("/previews/") ||
         (path === "/notifications" || path === "/notifications/read" || path === "/notifications/ticket") ||
         ((method !== "get" || path.endsWith("/auth/session")) && !path.endsWith("/auth/email") &&
           !path.startsWith("/preview-images/") && !path.startsWith("/board-logos/") && !path.startsWith("/board-messages/") &&
